@@ -1,0 +1,8 @@
+.pixi/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+_output/
+_conda-channel/
+tools/exr_wasm/target/
+*.egg-info/

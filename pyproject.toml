@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goldeneye"
+version = "0.1.0"
+description = "Reusable USD render regression runner and report viewer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Anders Langlands" }]
+dependencies = [
+  "pytest",
+  "numpy",
+  "pillow",
+  "flip-evaluator==1.7",
+]
+
+[project.scripts]
+goldeneye = "goldeneye.cli:main"
+
+[project.entry-points.pytest11]
+goldeneye = "goldeneye.pytest_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+goldeneye = ["static/*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".pixi",
+  "__pycache__",
+  "_output",
+  "comparison",
+  "renders",
+  "reference",
+]

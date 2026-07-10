@@ -1,0 +1,43 @@
+context:
+  version: "0.1.0"
+
+package:
+  name: goldeneye
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  noarch: python
+  script: python -m pip install . --no-deps -vv
+  python:
+    entry_points:
+      - goldeneye = goldeneye.cli:main
+
+requirements:
+  host:
+    - python
+    - pip
+    - setuptools
+    - wheel
+  run:
+    - python
+    - pytest
+    - numpy
+    - pillow
+    - flip-evaluator
+    - openusd-typhoon
+
+tests:
+  - python:
+      imports:
+        - goldeneye
+        - goldeneye.pytest_plugin
+  - script:
+      - goldeneye --help
+      - python -m pytest --help
+
+about:
+  summary: Reusable USD render regression runner and report viewer
+  license: Apache-2.0
