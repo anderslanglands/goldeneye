@@ -514,7 +514,8 @@ command = ["local-render", "--scene", "{usd_relpath}", "--out", "{output_relpath
     )
     assert report[0]["renderer"] == "local-typhoon"
     assert summary["renderer"] == "local-typhoon"
-    assert 'Renderer: <strong title="local-typhoon">local-typhoon</strong>' in html
+    assert 'class="top-nav-run" title="run-0001 local-typhoon"' in html
+    assert "Renderer:" not in html
     assert report[0]["command"] == [
         "local-render",
         "--scene",
@@ -2202,20 +2203,22 @@ def test_run_outputs_write_per_run_report_and_top_level_index(tmp_path: Path) ->
     assert "2026-06-30T00:00:00+00:00" in output_index
 
 
-def test_html_report_top_nav_shows_renderer(tmp_path: Path) -> None:
+def test_html_report_top_nav_adds_renderer_to_run_label(tmp_path: Path) -> None:
     renderer = 'local<foo&"bar'
     html = plugin.build_html_report([], run_context(tmp_path, renderer=renderer))
 
+    assert "Renderer:" not in html
     assert (
-        'Renderer: <strong title="local&lt;foo&amp;&quot;bar">'
-        'local&lt;foo&amp;&quot;bar</strong>'
+        'class="top-nav-run" title="run-0001 local&lt;foo&amp;&quot;bar"'
+        '>run-0001 local&lt;foo&amp;&quot;bar</span>'
     ) in html
 
 
-def test_html_report_top_nav_defaults_to_typhoon_renderer(tmp_path: Path) -> None:
+def test_html_report_top_nav_defaults_to_typhoon_in_run_label(tmp_path: Path) -> None:
     html = plugin.build_html_report([], run_context(tmp_path))
 
-    assert 'Renderer: <strong title="typhoon">typhoon</strong>' in html
+    assert "Renderer:" not in html
+    assert 'class="top-nav-run" title="run-0001 typhoon">run-0001 typhoon</span>' in html
 
 
 def test_html_counts_strict_failures(tmp_path: Path) -> None:
@@ -2230,8 +2233,9 @@ def test_html_counts_strict_failures(tmp_path: Path) -> None:
         context,
     )
 
-    assert "<strong>2</strong> failed" in html
-    assert "<strong>1</strong> expected failures" in html
+    assert "4 tests | 2 failed | 1 expected failure" in html
+    assert "<strong>2</strong> failed" not in html
+    assert "<strong>1</strong> expected failures" not in html
 
 
 def test_html_report_includes_filter_controls_and_row_metadata(tmp_path: Path) -> None:
@@ -2344,10 +2348,11 @@ def test_html_report_styles_statuses_and_makes_columns_sortable(tmp_path: Path) 
     assert [row[1] for row in parser.rows if row[1]] == ["suspect"]
     assert [row[2] for row in parser.rows if row[2]] == ["0.010", "0.200"]
     assert [row[3] for row in parser.rows if row[3]] == ["0.020", "0.250"]
-    assert "<strong>1</strong> suspect" in html
-    assert "Mean FLIP <strong>0.105</strong>" in html
-    assert "Min <strong>0.010</strong>" in html
-    assert "Max <strong>0.200</strong>" in html
+    assert "8 tests | 3 failed | 1 expected failure | 1 suspect | max FLIP 0.200" in html
+    assert "<strong>1</strong> suspect" not in html
+    assert "Mean FLIP <strong>0.105</strong>" not in html
+    assert "Min <strong>0.010</strong>" not in html
+    assert "Max <strong>0.200</strong>" not in html
     status_cells = {cell["text"]: cell for cell in parser.status_cells}
     assert status_cells["passed"] == {
         "text": "passed",
@@ -4035,7 +4040,7 @@ def test_html_report_normalizes_legacy_status_labels(tmp_path: Path) -> None:
     ]
 
 
-def test_regenerate_html_preserves_renderer_in_nav(tmp_path: Path) -> None:
+def test_regenerate_html_preserves_renderer_in_summary(tmp_path: Path) -> None:
     output_base = tmp_path / "_output"
     run_dir = write_report_run(output_base, 1, key="case")
     renderer = "storm"
@@ -4048,7 +4053,8 @@ def test_regenerate_html_preserves_renderer_in_nav(tmp_path: Path) -> None:
 
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     regenerated_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert f'Renderer: <strong title="{renderer}">{renderer}</strong>' in html
+    assert "Renderer:" not in html
+    assert 'class="top-nav-run" title="run-0001 storm">run-0001 storm</span>' in html
     assert regenerated_summary["renderer"] == renderer
 
 
@@ -4066,7 +4072,11 @@ def test_regenerate_html_uses_legacy_provider_as_renderer(tmp_path: Path) -> Non
 
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     regenerated_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert f'Renderer: <strong title="{provider}">{provider}</strong>' in html
+    assert "Renderer:" not in html
+    assert (
+        f'class="top-nav-run" title="run-0001 {provider}"'
+        f'>run-0001 {provider}</span>'
+    ) in html
     assert regenerated_summary["renderer"] == provider
 
 
@@ -4924,7 +4934,7 @@ def test_view_server_update_suspects_updates_case_config_and_report(tmp_path: Pa
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     assert "Clear suspect" in html
     assert "suspect-badge" in html
-    assert "<strong>1</strong> suspect" in html
+    assert '<span class="section-stats">1 test | 1 suspect</span>' in html
 
     result = view_server.update_suspects(
         {
@@ -4944,7 +4954,8 @@ def test_view_server_update_suspects_updates_case_config_and_report(tmp_path: Pa
     assert updated_report[0]["suspect"] is False
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     assert "Mark suspect" in html
-    assert "<strong>0</strong> suspect" in html
+    assert '<span class="section-stats">1 test</span>' in html
+    assert "0 suspect" not in html
 
 
 def test_view_server_update_references_copies_render_and_refreshes_report(

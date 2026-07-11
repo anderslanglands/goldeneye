@@ -1956,10 +1956,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
         for run in comparison_runs
     )
     comparison_payload = json_script_payload(comparison_manifest)
-    nav_flip_mean = format_flip_stat(summary.get("flip_mean"))
-    nav_flip_min = format_flip_stat(summary.get("flip_min"))
-    nav_flip_max = format_flip_stat(summary.get("flip_max"))
     nav_renderer = renderer_label(summary.get("renderer", summary.get("provider")))
+    nav_run_label = f"{summary['run_name']} {nav_renderer}"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1990,8 +1988,6 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     .top-nav-stats {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; color: #bbb; }}
     .top-nav-stat {{ white-space: nowrap; }}
     .top-nav-stat strong {{ color: #fff; font-weight: 700; }}
-    .top-nav-renderer {{ display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 360px; }}
-    .top-nav-renderer strong {{ display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }}
     .top-nav-controls {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; color: #bbb; }}
     .top-nav-controls label {{ color: #eee; font-weight: 700; }}
     .top-nav-controls select, .top-nav-controls input[type="search"] {{ color: #eee; background: #181818; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 8px; font: inherit; }}
@@ -2086,18 +2082,9 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
   <nav class="top-nav" aria-label="Run navigation">
     <a class="top-nav-brand" href="../index.html" aria-label="Results index">
       <span class="top-nav-logo" aria-hidden="true"></span>
-      <span class="top-nav-run">{esc(summary['run_name'])}</span>
+      <span class="top-nav-run" title="{esc(nav_run_label)}">{esc(nav_run_label)}</span>
     </a>
-    <div class="top-nav-stats" aria-label="Run statistics">
-      <span class="top-nav-stat"><strong>{summary['total']}</strong> rendered</span>
-      <span class="top-nav-stat"><strong>{summary['missing_references']}</strong> missing refs</span>
-      <span class="top-nav-stat"><strong>{summary['failed']}</strong> failed</span>
-      <span class="top-nav-stat"><strong>{summary.get('expected_failures', 0)}</strong> expected failures</span>
-      <span class="top-nav-stat"><strong>{summary.get('suspect', 0)}</strong> suspect</span>
-      <span class="top-nav-stat top-nav-renderer">Renderer: <strong title="{esc(nav_renderer)}">{esc(nav_renderer)}</strong></span>
-      <span class="top-nav-stat">Mean FLIP <strong>{nav_flip_mean}</strong></span>
-      <span class="top-nav-stat">Min <strong>{nav_flip_min}</strong></span>
-      <span class="top-nav-stat">Max <strong>{nav_flip_max}</strong></span>
+    <div class="top-nav-stats" aria-label="Run metadata">
       <span class="top-nav-stat">Started <strong>{esc(summary['started_at'])}</strong></span>
     </div>
     <div class="top-nav-controls" data-run-comparison-controls>
