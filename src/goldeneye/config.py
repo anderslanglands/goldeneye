@@ -64,7 +64,8 @@ class CaseConfig:
     skip: str | None = None
     xfail: str | None = None
     suspect: bool = False
-    expected_failure: bool = False
+    expected_failure: str | None = None
+    expected_failure_renderers: dict[str, str] = field(default_factory=dict)
     flip_threshold: float | None = None
     render_output: str | None = None
     renderer: str | None = None
@@ -211,20 +212,22 @@ def load_case_config(path: Path) -> CaseConfig:
     comparison = _table(data, "comparison")
     frames = _table(data, "frames")
     _reject_legacy_render_args(render, path)
+    expected_failure, expected_failure_renderers = _expected_failure_config(
+        _first_present(
+            test,
+            data,
+            "expected-failure",
+            "expected_failure",
+        ),
+        path,
+    )
 
     return CaseConfig(
         skip=_optional_string(test.get("skip", data.get("skip"))),
         xfail=_optional_string(test.get("xfail", data.get("xfail"))),
         suspect=_bool(test.get("suspect", data.get("suspect")), False),
-        expected_failure=_bool(
-            _first_present(
-                test,
-                data,
-                "expected-failure",
-                "expected_failure",
-            ),
-            False,
-        ),
+        expected_failure=expected_failure,
+        expected_failure_renderers=expected_failure_renderers,
         flip_threshold=_optional_float(
             comparison.get("flip_threshold", data.get("flip_threshold"))
         ),
@@ -370,6 +373,40 @@ def _bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     raise TypeError(f"expected bool, got {type(value).__name__}")
+
+
+def _expected_failure_config(
+    value: Any, config_path: Path
+) -> tuple[str | None, dict[str, str]]:
+    if value is None:
+        return None, {}
+    if isinstance(value, str):
+        return _expected_failure_reason(value, config_path), {}
+    if not isinstance(value, dict):
+        raise TypeError(f"expected string or renderer table, got {type(value).__name__}")
+
+    default: str | None = None
+    renderers: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(item, str):
+            raise TypeError(
+                f"expected expected-failure value for renderer {key!r} to be string"
+            )
+        renderer = str(key).strip()
+        if not renderer:
+            raise ValueError(f"{config_path}: expected-failure renderer name must not be empty")
+        reason = _expected_failure_reason(item, config_path)
+        if renderer in {"default", "*"}:
+            default = reason
+        else:
+            renderers[renderer] = reason
+    return default, renderers
+
+
+def _expected_failure_reason(value: str, config_path: Path) -> str:
+    if not value.strip():
+        raise ValueError(f"{config_path}: expected-failure reason must not be empty")
+    return value
 
 
 def _parse_frame_value(value: str) -> FrameValue:

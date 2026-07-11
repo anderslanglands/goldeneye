@@ -151,7 +151,8 @@ class GoldeneyeCase:
     skip: str | None
     xfail: str | None
     suspect: bool
-    expected_failure: bool
+    expected_failure: str | None
+    expected_failure_renderers: dict[str, str]
     flip_threshold: float | None
     frame: FrameValue | None = None
 
@@ -369,6 +370,7 @@ def build_cases(path: Path) -> list[GoldeneyeCase]:
             xfail=xfail,
             suspect=case_config.suspect,
             expected_failure=case_config.expected_failure,
+            expected_failure_renderers=case_config.expected_failure_renderers,
             flip_threshold=threshold,
             frame=frame,
         )
@@ -547,17 +549,36 @@ def next_run_number(output_base: Path) -> int:
 
 
 def run_goldeneye_case(case: GoldeneyeCase, options: GoldeneyeOptions) -> dict[str, Any]:
+    expected_failure = case_expected_failure_reason(case, options)
     try:
-        return _run_goldeneye_case_impl(case, options)
+        return _run_goldeneye_case_impl(case, options, expected_failure=expected_failure)
     except GoldeneyeRenderError as exc:
-        if case.expected_failure and exc.result is not None:
-            return mark_expected_failure(exc.result)
+        if expected_failure is not None and exc.result is not None:
+            return mark_expected_failure(exc.result, expected_failure)
         raise
 
 
-def mark_expected_failure(result: dict[str, Any]) -> dict[str, Any]:
+def case_expected_failure_reason(
+    case: GoldeneyeCase, options: GoldeneyeOptions
+) -> str | None:
+    return expected_failure_for_renderer(case, selected_renderer_name(case, options))
+
+
+def case_expected_failure(case: GoldeneyeCase, options: GoldeneyeOptions) -> bool:
+    return case_expected_failure_reason(case, options) is not None
+
+
+def expected_failure_for_renderer(case: GoldeneyeCase, renderer: str) -> str | None:
+    renderer = renderer_label(renderer)
+    if renderer in case.expected_failure_renderers:
+        return case.expected_failure_renderers[renderer]
+    return case.expected_failure
+
+
+def mark_expected_failure(result: dict[str, Any], reason: str) -> dict[str, Any]:
     original_status = str(result.get("status") or "failed")
-    result["expected_failure"] = True
+    result["expected_failure"] = reason
+    result["expected_failure_reason"] = reason
     result["expected_failure_status"] = original_status
     result["status"] = EXPECTED_FAILURE_STATUS
     return result
@@ -567,9 +588,17 @@ def is_expected_failure_result(row: dict[str, Any]) -> bool:
     return row.get("status") == EXPECTED_FAILURE_STATUS
 
 
-def _run_goldeneye_case_impl(case: GoldeneyeCase, options: GoldeneyeOptions) -> dict[str, Any]:
+def _run_goldeneye_case_impl(
+    case: GoldeneyeCase,
+    options: GoldeneyeOptions,
+    *,
+    expected_failure: str | None = None,
+) -> dict[str, Any]:
     output_root = resolve_output_root(case, options)
     artifact_root = resolve_artifact_root(case, options)
+
+    if expected_failure is None:
+        expected_failure = case_expected_failure_reason(case, options)
 
     usd_doc = read_usd_layer_doc(case.path)
     result: dict[str, Any] = {
@@ -591,7 +620,8 @@ def _run_goldeneye_case_impl(case: GoldeneyeCase, options: GoldeneyeOptions) -> 
         "reference_image": None,
         "flip_threshold": case.flip_threshold,
         "suspect": case.suspect,
-        "expected_failure": case.expected_failure,
+        "expected_failure": expected_failure,
+        "expected_failure_reason": expected_failure,
         "frame": case.frame,
         "status": "pending",
         "run_number": options.run_context.run_number,

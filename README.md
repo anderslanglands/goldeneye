@@ -174,10 +174,17 @@ Mark an intentionally failing case in `<test>.goldeneye.toml`:
 
 ```toml
 [test]
-expected-failure = true
+expected-failure = "known renderer mismatch"
 ```
 
-Expected failures show status `expected-failure`, preserve the original failure in `expected_failure_status`, and are counted separately from strict failures.
+Expected failures can also be renderer-specific. Renderer names match the selected Goldeneye renderer, including names passed with `--renderer`:
+
+```toml
+[test.expected-failure]
+local-typhoon = "known local Typhoon mismatch"
+```
+
+When using the table form, `default` or `*` sets the fallback reason for renderers that are not listed explicitly. Expected failures show status `expected-failure`, preserve the reason in `expected_failure`, preserve the original failure in `expected_failure_status`, and are counted separately from strict failures.
 
 ## Persisting References
 

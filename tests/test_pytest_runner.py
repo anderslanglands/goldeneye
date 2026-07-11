@@ -1154,7 +1154,8 @@ output_pattern = "{stem}-embree.{frame:04d}.exr"
             "started_at": report[0]["started_at"],
             "status": "failed-config",
             "suspect": False,
-            "expected_failure": False,
+            "expected_failure": None,
+            "expected_failure_reason": None,
             "suite": "sample",
             "usd": str(usd),
             "usd_source": "#usda 1.0\n",
@@ -1514,7 +1515,7 @@ def test_expected_failure_converts_render_failure_to_report_status(
 ) -> None:
     usd = write_suite(tmp_path)
     usd.with_suffix(".goldeneye.toml").write_text(
-        "[test]\nexpected-failure = true\n",
+        "[test]\nexpected-failure = \"known renderer failure\"\n",
         encoding="utf-8",
     )
     case = plugin.build_case(usd)
@@ -1530,11 +1531,264 @@ def test_expected_failure_converts_render_failure_to_report_status(
 
     result = plugin.run_goldeneye_case(case, opts)
 
-    assert case.expected_failure is True
+    assert case.expected_failure == "known renderer failure"
     assert result["status"] == "expected-failure"
-    assert result["expected_failure"] is True
+    assert result["expected_failure"] == "known renderer failure"
+    assert result["expected_failure_reason"] == "known renderer failure"
     assert result["expected_failure_status"] == "failed-render"
     assert result["returncode"] == 7
+
+
+def test_renderer_specific_expected_failure_depends_on_selected_renderer(
+    tmp_path: Path,
+) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """
+[suite]
+name = "sample"
+
+[renderers.typhoon]
+command = ["definitely-missing-typhoon-renderer", "{usd_path}"]
+
+[renderers.local-typhoon]
+command = ["definitely-missing-local-renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        """
+[test.expected-failure]
+local-typhoon = "local renderer is expected to fail"
+""",
+        encoding="utf-8",
+    )
+
+    matched = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--renderer",
+        "local-typhoon",
+        "--goldeneye-output-root",
+        str(tmp_path / "_output-local"),
+        "-q",
+    )
+
+    assert matched.returncode == 0, matched.stderr
+    matched_report = json.loads(
+        (tmp_path / "_output-local" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    matched_summary = json.loads(
+        (tmp_path / "_output-local" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert matched_report[0]["renderer"] == "local-typhoon"
+    assert matched_report[0]["status"] == "expected-failure"
+    assert matched_report[0]["expected_failure"] == "local renderer is expected to fail"
+    assert matched_report[0]["expected_failure_reason"] == "local renderer is expected to fail"
+    assert matched_report[0]["expected_failure_status"] == "failed-launch"
+    assert matched_report[0]["command"][0] == "definitely-missing-local-renderer"
+    assert matched_summary["failed"] == 0
+    assert matched_summary["expected_failures"] == 1
+
+    unmatched = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-output-root",
+        str(tmp_path / "_output-default"),
+        "-q",
+    )
+
+    assert unmatched.returncode == 1
+    unmatched_report = json.loads(
+        (tmp_path / "_output-default" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    unmatched_summary = json.loads(
+        (tmp_path / "_output-default" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert unmatched_report[0]["renderer"] == "typhoon"
+    assert unmatched_report[0]["status"] == "failed-launch"
+    assert unmatched_report[0]["expected_failure"] is None
+    assert unmatched_report[0]["expected_failure_reason"] is None
+    assert unmatched_report[0]["command"][0] == "definitely-missing-typhoon-renderer"
+    assert unmatched_summary["failed"] == 1
+    assert unmatched_summary["expected_failures"] == 0
+
+
+def test_renderer_specific_expected_failure_uses_case_config_renderer(
+    tmp_path: Path,
+) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """
+[suite]
+name = "sample"
+
+[renderers.typhoon]
+command = ["definitely-missing-typhoon-renderer", "{usd_path}"]
+
+[renderers.storm]
+command = ["definitely-missing-storm-renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        """
+[render]
+renderer = "storm"
+
+[test.expected-failure]
+storm = "storm renderer is expected to fail"
+""",
+        encoding="utf-8",
+    )
+
+    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(
+        (tmp_path / "_output" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    summary = json.loads(
+        (tmp_path / "_output" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report[0]["renderer"] == "storm"
+    assert report[0]["status"] == "expected-failure"
+    assert report[0]["expected_failure"] == "storm renderer is expected to fail"
+    assert report[0]["expected_failure_reason"] == "storm renderer is expected to fail"
+    assert report[0]["expected_failure_status"] == "failed-launch"
+    assert report[0]["command"][0] == "definitely-missing-storm-renderer"
+    assert summary["renderer"] == "storm"
+    assert summary["failed"] == 0
+    assert summary["expected_failures"] == 1
+
+
+
+def test_renderer_specific_expected_failure_uses_render_command_label(
+    tmp_path: Path,
+) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """
+[suite]
+name = "sample"
+
+[render]
+command = ["definitely-missing-suite-renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        """
+[test.expected-failure]
+command-line = "command-line renderer is expected to fail"
+""",
+        encoding="utf-8",
+    )
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--render-command",
+        "definitely-missing-command-renderer {usd_path}",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(
+        (tmp_path / "_output" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    summary = json.loads(
+        (tmp_path / "_output" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report[0]["renderer"] == "command-line"
+    assert report[0]["status"] == "expected-failure"
+    assert report[0]["expected_failure"] == "command-line renderer is expected to fail"
+    assert report[0]["expected_failure_reason"] == "command-line renderer is expected to fail"
+    assert report[0]["expected_failure_status"] == "failed-launch"
+    assert report[0]["command"][0] == "definitely-missing-command-renderer"
+    assert summary["renderer"] == "command-line"
+    assert summary["failed"] == 0
+    assert summary["expected_failures"] == 1
+
+
+
+def test_renderer_specific_expected_failure_does_not_match_render_command_label(
+    tmp_path: Path,
+) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """
+[suite]
+name = "sample"
+
+[render]
+command = ["definitely-missing-suite-renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        """
+[test.expected-failure]
+typhoon = "typhoon renderer is expected to fail"
+""",
+        encoding="utf-8",
+    )
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--render-command",
+        "definitely-missing-command-renderer {usd_path}",
+        "-q",
+    )
+
+    assert completed.returncode == 1
+    report = json.loads(
+        (tmp_path / "_output" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    summary = json.loads(
+        (tmp_path / "_output" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report[0]["renderer"] == "command-line"
+    assert report[0]["status"] == "failed-launch"
+    assert report[0]["expected_failure"] is None
+    assert report[0]["expected_failure_reason"] is None
+    assert report[0]["command"][0] == "definitely-missing-command-renderer"
+    assert summary["renderer"] == "command-line"
+    assert summary["failed"] == 1
+    assert summary["expected_failures"] == 0
 
 
 def test_pytest_expected_failure_is_counted_separately_from_failures(
@@ -1555,13 +1809,15 @@ command = ["definitely-missing-goldeneye-renderer", "{usd_path}"]
     usd = suite / "case.usda"
     usd.write_text("#usda 1.0\n", encoding="utf-8")
     usd.with_suffix(".goldeneye.toml").write_text(
-        "[test]\nexpected-failure = true\n",
+        "[test]\nexpected-failure = \"known renderer failure\"\n",
         encoding="utf-8",
     )
+    unmarked = suite / "unmarked.usda"
+    unmarked.write_text("#usda 1.0\n", encoding="utf-8")
 
-    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+    completed = run_pytest_with_plugin(tmp_path, str(suite), "-q")
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 1
     report = json.loads(
         (tmp_path / "_output" / "run-0001" / "goldeneye-report.json").read_text(
             encoding="utf-8"
@@ -1572,9 +1828,15 @@ command = ["definitely-missing-goldeneye-renderer", "{usd_path}"]
             encoding="utf-8"
         )
     )
-    assert report[0]["status"] == "expected-failure"
-    assert report[0]["expected_failure_status"] == "failed-launch"
-    assert summary["failed"] == 0
+    rows = {row["key"]: row for row in report}
+    assert rows["case"]["status"] == "expected-failure"
+    assert rows["case"]["expected_failure"] == "known renderer failure"
+    assert rows["case"]["expected_failure_reason"] == "known renderer failure"
+    assert rows["case"]["expected_failure_status"] == "failed-launch"
+    assert rows["unmarked"]["status"] == "failed-launch"
+    assert rows["unmarked"]["expected_failure"] is None
+    assert rows["unmarked"]["expected_failure_reason"] is None
+    assert summary["failed"] == 1
     assert summary["expected_failures"] == 1
 
 
@@ -1711,33 +1973,104 @@ def test_adjacent_case_config_marks_case_expected_failure(tmp_path: Path) -> Non
     usd = write_suite(tmp_path)
     case_config = usd.with_suffix(".goldeneye.toml")
     case_config.write_text(
-        "[test]\nexpected-failure = true\n",
+        "[test]\nexpected-failure = \"known renderer failure\"\n",
         encoding="utf-8",
     )
 
     case = plugin.build_case(usd)
     result = plugin.run_goldeneye_case(case, options(tmp_path))
 
-    assert case.expected_failure is True
+    assert case.expected_failure == "known renderer failure"
     assert result["status"] == "dry-run"
-    assert result["expected_failure"] is True
+    assert result["expected_failure"] == "known renderer failure"
 
     case_config.write_text(
-        "[test]\nexpected_failure = false\n",
+        "[test]\n",
         encoding="utf-8",
     )
 
-    assert plugin.build_case(usd).expected_failure is False
+    assert plugin.build_case(usd).expected_failure is None
 
 
-def test_case_config_rejects_non_boolean_expected_failure(tmp_path: Path) -> None:
+def test_adjacent_case_config_marks_expected_failure_for_renderer(
+    tmp_path: Path,
+) -> None:
     usd = write_suite(tmp_path)
     usd.with_suffix(".goldeneye.toml").write_text(
-        '[test]\nexpected-failure = "yes"\n',
+        """
+[test.expected-failure]
+default = "fallback renderer mismatch"
+storm = "storm renderer mismatch"
+""",
         encoding="utf-8",
     )
 
-    with pytest.raises(TypeError, match="expected bool"):
+    case = plugin.build_case(usd)
+
+    assert case.expected_failure == "fallback renderer mismatch"
+    assert case.expected_failure_renderers == {
+        "storm": "storm renderer mismatch",
+    }
+    assert plugin.expected_failure_for_renderer(case, "typhoon") == "fallback renderer mismatch"
+    assert plugin.expected_failure_for_renderer(case, "storm") == "storm renderer mismatch"
+    assert plugin.expected_failure_for_renderer(case, "local-typhoon") == "fallback renderer mismatch"
+
+
+def test_case_config_rejects_boolean_expected_failure(tmp_path: Path) -> None:
+    usd = write_suite(tmp_path)
+    usd.with_suffix(".goldeneye.toml").write_text(
+        '[test]\nexpected-failure = true\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="expected string"):
+        plugin.build_case(usd)
+
+
+def test_case_config_rejects_boolean_renderer_expected_failure(
+    tmp_path: Path,
+) -> None:
+    usd = write_suite(tmp_path)
+    usd.with_suffix(".goldeneye.toml").write_text(
+        '[test.expected-failure]\ntyphoon = true\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="expected-failure.*string"):
+        plugin.build_case(usd)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '[test]\nexpected-failure = ""\n',
+        '[test]\nexpected-failure = "   "\n',
+    ],
+)
+def test_case_config_rejects_empty_expected_failure_reason(
+    tmp_path: Path, contents: str
+) -> None:
+    usd = write_suite(tmp_path)
+    usd.with_suffix(".goldeneye.toml").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected-failure reason must not be empty"):
+        plugin.build_case(usd)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '[test.expected-failure]\ntyphoon = ""\n',
+        '[test.expected-failure]\ntyphoon = "   "\n',
+    ],
+)
+def test_case_config_rejects_empty_renderer_expected_failure_reason(
+    tmp_path: Path, contents: str
+) -> None:
+    usd = write_suite(tmp_path)
+    usd.with_suffix(".goldeneye.toml").write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected-failure reason must not be empty"):
         plugin.build_case(usd)
 
 
@@ -1758,7 +2091,7 @@ def test_cases_use_builtin_default_flip_threshold(tmp_path: Path) -> None:
     case = plugin.build_case(usd)
     assert case.flip_threshold == 0.04
     assert case.suspect is False
-    assert case.expected_failure is False
+    assert case.expected_failure is None
 
 
 def test_suite_default_flip_threshold_overrides_builtin_default(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 # Suite Config
 
-A suite is collected from `.usda` files below a directory containing `goldeneye-suite.toml`.
+A suite is collected from `.usd`, `.usda`, `.usdc`, and `.usdz` files below a directory containing `goldeneye-suite.toml`.
 
 ```toml
 [suite]
@@ -22,11 +22,11 @@ Per-test config lives next to a fixture as `<test>.goldeneye.toml`.
 
 ```toml
 [test]
-expected-failure = true
+expected-failure = "known renderer mismatch"
 suspect = true
 
 [comparison]
 flip_threshold = 0.025
 ```
 
-Use `expected-failure = true` only for intentionally failing cases. Goldeneye reports these rows with status `expected-failure`, preserves the underlying failure status as `expected_failure_status`, and counts them separately from strict failures.
+Use `expected-failure = "reason"` only for intentionally failing cases. Goldeneye reports these rows with status `expected-failure`, preserves the reason in `expected_failure`, preserves the underlying failure status as `expected_failure_status`, and counts them separately from strict failures.
