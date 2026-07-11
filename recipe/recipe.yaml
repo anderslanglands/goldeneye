@@ -41,3 +41,4 @@ tests:
 about:
   summary: Reusable USD render regression runner and report viewer
   license: Apache-2.0
+  license_file: LICENSE
