@@ -3835,7 +3835,7 @@ def test_exr_viewer_scales_render_to_reference_dimensions(tmp_path: Path) -> Non
     assert result["src"] == "render.exr"
 
 
-def test_exr_viewer_shows_render_when_initial_reference_fails(tmp_path: Path) -> None:
+def test_exr_viewer_shows_render_by_default_and_when_reference_fails(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required to validate the browser EXR viewer runtime")
 
@@ -3848,7 +3848,7 @@ def test_exr_viewer_shows_render_when_initial_reference_fails(tmp_path: Path) ->
     )
     viewer_module = tmp_path / "goldeneye-exr-viewer.mjs"
     viewer_module.write_text(viewer_js.read_text(encoding="utf-8"), encoding="utf-8")
-    script = tmp_path / "viewer-reference-failure-test.mjs"
+    script = tmp_path / "viewer-default-render-test.mjs"
     script.write_text(
         """
         import { pathToFileURL } from 'node:url';
@@ -3913,32 +3913,44 @@ def test_exr_viewer_shows_render_when_initial_reference_fails(tmp_path: Path) ->
           addEventListener: () => {},
         };
         const module = await import(pathToFileURL(process.argv[2]).href);
-        const status = { textContent: '' };
-        const mainCanvas = makeDisplayCanvas();
-        const zoomCanvas = makeDisplayCanvas();
-        const elements = new Map([
-          ['[data-exr-status]', status],
-          ['[data-main-canvas]', mainCanvas],
-          ['[data-zoom-canvas]', zoomCanvas],
-        ]);
-        const viewer = {
-          dataset: {
-            referenceSrc: 'missing.png',
-            renderSrc: 'render.png',
-            flipSrc: '',
-          },
-          querySelector: (selector) => elements.get(selector) || null,
-        };
 
-        await module.initializeViewer(viewer);
+        async function runViewer(referenceSrc) {
+          const status = { textContent: '' };
+          const mode = { textContent: '' };
+          const mainCanvas = makeDisplayCanvas();
+          const zoomCanvas = makeDisplayCanvas();
+          const elements = new Map([
+            ['[data-exr-status]', status],
+            ['[data-comparison-mode]', mode],
+            ['[data-main-canvas]', mainCanvas],
+            ['[data-zoom-canvas]', zoomCanvas],
+          ]);
+          const viewer = {
+            dataset: {
+              referenceSrc,
+              renderSrc: 'render.png',
+              flipSrc: '',
+            },
+            querySelector: (selector) => elements.get(selector) || null,
+          };
+
+          await module.initializeViewer(viewer);
+          return {
+            activeName: viewer._goldeneyeExrState.activeName,
+            activeIsRender: viewer._goldeneyeExrState.active === viewer._goldeneyeExrState.render,
+            referenceLoaded: Boolean(viewer._goldeneyeExrState.reference),
+            renderWidth: viewer._goldeneyeExrState.render.width,
+            renderHeight: viewer._goldeneyeExrState.render.height,
+            canvasWidth: mainCanvas.width,
+            canvasHeight: mainCanvas.height,
+            mode: mode.textContent,
+            status: status.textContent,
+          };
+        }
+
         console.log(JSON.stringify({
-          activeName: viewer._goldeneyeExrState.activeName,
-          reference: viewer._goldeneyeExrState.reference,
-          renderWidth: viewer._goldeneyeExrState.render.width,
-          renderHeight: viewer._goldeneyeExrState.render.height,
-          canvasWidth: mainCanvas.width,
-          canvasHeight: mainCanvas.height,
-          status: status.textContent,
+          withReference: await runViewer('reference.png'),
+          missingReference: await runViewer('missing.png'),
         }));
         """,
         encoding="utf-8",
@@ -3954,15 +3966,29 @@ def test_exr_viewer_shows_render_when_initial_reference_fails(tmp_path: Path) ->
 
     result = json.loads(completed.stdout)
     assert result == {
-        "activeName": "render",
-        "reference": None,
-        "renderWidth": 3,
-        "renderHeight": 2,
-        "canvasWidth": 3,
-        "canvasHeight": 2,
-        "status": "failed to load missing.png",
+        "withReference": {
+            "activeName": "render",
+            "activeIsRender": True,
+            "referenceLoaded": True,
+            "renderWidth": 3,
+            "renderHeight": 2,
+            "canvasWidth": 3,
+            "canvasHeight": 2,
+            "mode": "Render",
+            "status": "",
+        },
+        "missingReference": {
+            "activeName": "render",
+            "activeIsRender": True,
+            "referenceLoaded": False,
+            "renderWidth": 3,
+            "renderHeight": 2,
+            "canvasWidth": 3,
+            "canvasHeight": 2,
+            "mode": "Render",
+            "status": "failed to load missing.png",
+        },
     }
-
 
 def test_exr_viewer_keyboard_three_selects_flip_in_main_canvas(tmp_path: Path) -> None:
     if shutil.which("node") is None:

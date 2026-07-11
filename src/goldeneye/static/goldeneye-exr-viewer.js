@@ -418,8 +418,8 @@ function reconcileViewerImages(state) {
   state.render = renderAtReferenceSize(state.renderSource, state.reference);
   let active = state[state.activeName];
   if (!active) {
-    if (state.reference) state.activeName = "reference";
-    else if (state.render) state.activeName = "render";
+    if (state.render) state.activeName = "render";
+    else if (state.reference) state.activeName = "reference";
     else state.activeName = "flip";
     active = state[state.activeName];
   }
@@ -469,8 +469,8 @@ async function initializeViewer(viewer) {
       renderSource,
       render,
       flip,
-      active: reference || render || flip,
-      activeName: reference ? "reference" : (render ? "render" : "flip"),
+      active: render || reference || flip,
+      activeName: render ? "render" : (reference ? "reference" : "flip"),
       pointer: [0, 0],
     };
     viewer._goldeneyeExrState = state;
