@@ -37,7 +37,7 @@ command = [
   "--renderer", "Embree",
   "--disableCameraLight",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 output_pattern = "rendered.{stem}.exr"
 
@@ -367,10 +367,10 @@ def test_render_command_option_overrides_configured_command(tmp_path: Path) -> N
 
 def test_render_command_option_preserves_quoted_arguments(tmp_path: Path) -> None:
     parsed = plugin.parse_render_command_option(
-        'renderer --label "open pbr" --outputRoot {run_dir}'
+        'renderer --label "open pbr" --outputRoot {suite_output_root}'
     )
 
-    assert parsed == ("renderer", "--label", "open pbr", "--outputRoot", "{run_dir}")
+    assert parsed == ("renderer", "--label", "open pbr", "--outputRoot", "{suite_output_root}")
 
 
 def test_render_command_option_rejects_empty_command() -> None:
@@ -421,7 +421,7 @@ output_pattern = "project/{path}.exr"
         "--out",
         "project/case.exr",
     ]
-    assert report[0]["render_output"] == str((run_dir / "project" / "case.exr").resolve())
+    assert report[0]["render_output"] == str((run_dir / "sample" / "project" / "case.exr").resolve())
 
 
 def test_project_config_selects_named_renderer(tmp_path: Path) -> None:
@@ -475,7 +475,7 @@ def test_renderer_option_selects_configured_renderer_for_run(tmp_path: Path) -> 
 output_pattern = "project/{path}.exr"
 
 [renderers.typhoon]
-command = ["usdrender", "{usd_path}", "--outputRoot", "{run_dir}"]
+command = ["usdrender", "{usd_path}", "--outputRoot", "{suite_output_root}"]
 
 [renderers.local-typhoon]
 command = ["local-render", "--scene", "{usd_relpath}", "--out", "{output_relpath}"]
@@ -534,7 +534,7 @@ def test_case_config_can_select_named_renderer(tmp_path: Path) -> None:
 name = "sample"
 
 [renderers.typhoon]
-command = ["usdrender", "{usd_path}", "--outputRoot", "{run_dir}"]
+command = ["usdrender", "{usd_path}", "--outputRoot", "{suite_output_root}"]
 
 [renderers.storm]
 command = ["storm-render", "{usd_relpath}", "{output_relpath}"]
@@ -586,6 +586,106 @@ def test_cli_init_writes_default_named_renderer_config(
     project = plugin.load_project_config_for_path(str(tmp_path))
     assert project.renderer == "typhoon"
     assert project.renderers["typhoon"] == plugin.DEFAULT_RENDER_COMMAND
+    assert project.render_output_pattern == "{path}.exr"
+    assert "{suite_output_root}" in config_text
+    assert "{suite}/{path}.exr" not in config_text
+
+
+def test_cli_init_config_drives_suite_relative_nested_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["init"]) == 0
+
+    suite = tmp_path / "suite"
+    nested = suite / "nested"
+    nested.mkdir(parents=True)
+    (suite / "goldeneye-suite.toml").write_text(
+        '[suite]\nname = "test-suite"\n', encoding="utf-8"
+    )
+    usd = nested / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path, str(usd), "--goldeneye-dry-run", "-s", "-q"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_dir = tmp_path / "_output" / "run-0001"
+    report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    assert report[0]["command"][-2:] == ["--outputRoot", str(run_dir / "test-suite")]
+    assert report[0]["render_output"] == str(
+        (run_dir / "test-suite" / "nested" / "case.exr").resolve()
+    )
+
+
+def test_template_fields_distinguish_suite_and_run_relative_outputs(tmp_path: Path) -> None:
+    (tmp_path / "goldeneye.toml").write_text(
+        '''
+[render]
+command = [
+  "renderer",
+  "--product", "{output_relpath}",
+  "--run-product", "{run_output_relpath}",
+  "--root", "{suite_output_root}",
+  "--run", "{run_dir}",
+]
+output_pattern = "{path}.exr"
+''',
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    nested = suite / "nested"
+    nested.mkdir(parents=True)
+    (suite / "goldeneye-suite.toml").write_text(
+        '[suite]\nname = "sample"\n', encoding="utf-8"
+    )
+    usd = nested / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path, str(usd), "--goldeneye-dry-run", "-s", "-q"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_dir = tmp_path / "_output" / "run-0001"
+    report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    assert report[0]["command"] == [
+        "renderer",
+        "--product", "nested/case.exr",
+        "--run-product", "sample/nested/case.exr",
+        "--root", str(run_dir / "sample"),
+        "--run", str(run_dir),
+    ]
+    assert report[0]["render_output"] == str(
+        (run_dir / "sample" / "nested" / "case.exr").resolve()
+    )
+
+
+def test_default_output_roots_are_scoped_per_suite(tmp_path: Path) -> None:
+    suites = []
+    for suite_name in ("alpha", "beta"):
+        suite = tmp_path / suite_name
+        suite.mkdir()
+        (suite / "goldeneye-suite.toml").write_text(
+            f'[suite]\nname = "{suite_name}"\n', encoding="utf-8"
+        )
+        usd = suite / "case.usda"
+        usd.write_text("#usda 1.0\n", encoding="utf-8")
+        suites.append(str(usd))
+
+    completed = run_pytest_with_plugin(
+        tmp_path, *suites, "--goldeneye-dry-run", "-s", "-q"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_dir = tmp_path / "_output" / "run-0001"
+    report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    rows = {row["suite"]: row for row in report}
+    assert rows["alpha"]["render_output"] == str((run_dir / "alpha" / "case.exr").resolve())
+    assert rows["beta"]["render_output"] == str((run_dir / "beta" / "case.exr").resolve())
+    assert rows["alpha"]["command"][-2:] == ["--outputRoot", str(run_dir / "alpha")]
+    assert rows["beta"]["command"][-2:] == ["--outputRoot", str(run_dir / "beta")]
 
 
 def test_cli_init_refuses_to_overwrite_without_force(
@@ -634,11 +734,12 @@ def test_package_mode_calls_installed_usdrender_with_base_flags(tmp_path: Path) 
     case = plugin.build_case(usd)
     opts = options(tmp_path)
 
-    cmd = plugin.build_render_command(case, opts, opts.run_context.run_dir)
+    output_root = plugin.resolve_output_root(case, opts)
+    cmd = plugin.build_render_command(case, opts, output_root)
 
     assert cmd[:5] == ["usdrender", "--complexity", "high", "--renderer", "Embree"]
     assert "--disableCameraLight" in cmd
-    assert cmd[-2:] == ["--outputRoot", str(opts.run_context.run_dir)]
+    assert cmd[-2:] == ["--outputRoot", str(opts.run_context.run_dir / "sample")]
 
 
 def test_suite_render_command_replaces_project_default(tmp_path: Path) -> None:
@@ -659,7 +760,7 @@ command = [
   "usdrender",
   "--disableCameraLight",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 output_pattern = "rendered.{stem}.exr"
 """.replace("__MANIFEST__", str(manifest))
@@ -669,7 +770,8 @@ output_pattern = "rendered.{stem}.exr"
     case = plugin.build_case(usd)
     opts = options(tmp_path)
 
-    cmd = plugin.build_render_command(case, opts, opts.run_context.run_dir)
+    output_root = plugin.resolve_output_root(case, opts)
+    cmd = plugin.build_render_command(case, opts, output_root)
 
     assert cmd[:6] == [
         "pixi",
@@ -717,7 +819,8 @@ def test_renderer_output_is_captured_as_combined_stream(
     usd = write_suite(tmp_path)
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
         assert kwargs["stdout"] is subprocess.PIPE
@@ -833,12 +936,12 @@ case = "1.5"
 
     cases = plugin.build_cases(usd)
     opts = options(tmp_path)
-    cmd = plugin.build_render_command(cases[0], opts, opts.run_context.run_dir)
-
     assert [case.key for case in cases] == ["case++frame++1_5"]
-    assert plugin.resolve_render_output(cases[0], opts.run_context.run_dir) == (
-        opts.run_context.run_dir / "case.1.5.exr"
+    output_root = plugin.resolve_output_root(cases[0], opts)
+    assert plugin.resolve_render_output(cases[0], output_root) == (
+        opts.run_context.run_dir / "sample" / "case.1.5.exr"
     ).resolve()
+    cmd = plugin.build_render_command(cases[0], opts, output_root)
     frame_arg = cmd.index("--frames")
     assert cmd[frame_arg : frame_arg + 2] == ["--frames", "1.5"]
 
@@ -876,18 +979,19 @@ case = "1:3x2"
         "case++frame++0003",
     ]
     assert [case.frame for case in cases] == [1, 3]
+    output_root = plugin.resolve_output_root(cases[1], opts)
     assert plugin.resolve_render_output(
-        cases[1], opts.run_context.run_dir
-    ) == (opts.run_context.run_dir / "case-embree.0003.exr").resolve()
+        cases[1], output_root
+    ) == (opts.run_context.run_dir / "sample" / "case-embree.0003.exr").resolve()
     assert plugin.resolve_reference(cases[1], opts) == (
         reference_dir / "case-embree.0003.exr"
     ).resolve()
 
-    cmd = plugin.build_render_command(cases[1], opts, opts.run_context.run_dir)
+    cmd = plugin.build_render_command(cases[1], opts, output_root)
 
     frame_arg = cmd.index("--frames")
     assert cmd[frame_arg : frame_arg + 2] == ["--frames", "3"]
-    assert cmd[-5:-2] == [str(usd), "--outputRoot", str(opts.run_context.run_dir)]
+    assert cmd[-5:-2] == [str(usd), "--outputRoot", str(opts.run_context.run_dir / "sample")]
 
 
 def test_pytest_collection_expands_configured_frames(tmp_path: Path) -> None:
@@ -967,10 +1071,11 @@ case = "7"
     case = plugin.build_case(usd)
     opts = options(
         tmp_path,
-        render_command=("renderer", "{usd_path}", "--outputRoot", "{run_dir}"),
+        render_command=("renderer", "{usd_path}", "--outputRoot", "{suite_output_root}"),
     )
 
-    cmd = plugin.build_render_command(case, opts, opts.run_context.run_dir)
+    output_root = plugin.resolve_output_root(case, opts)
+    cmd = plugin.build_render_command(case, opts, output_root)
 
     assert cmd[-2:] == ["--frames", "7"]
 
@@ -1008,14 +1113,15 @@ path = "refs/{stem}.{frame:04d}.exr"
     opts = options(tmp_path)
 
     assert [case.key for case in cases] == ["case++frame++0005"]
-    assert plugin.resolve_render_output(cases[0], opts.run_context.run_dir) == (
-        opts.run_context.run_dir / "renders" / "case.0005.exr"
+    output_root = plugin.resolve_output_root(cases[0], opts)
+    assert plugin.resolve_render_output(cases[0], output_root) == (
+        opts.run_context.run_dir / "sample" / "renders" / "case.0005.exr"
     ).resolve()
     assert plugin.resolve_reference(cases[0], opts) == (
         suite / "refs" / "case.0005.exr"
     ).resolve()
 
-    cmd = plugin.build_render_command(cases[0], opts, opts.run_context.run_dir)
+    cmd = plugin.build_render_command(cases[0], opts, output_root)
     frame_arg = cmd.index("--frames")
     assert cmd[frame_arg : frame_arg + 2] == ["--frames", "5"]
 
@@ -1143,7 +1249,7 @@ output_pattern = "{stem}-embree.{frame:04d}.exr"
             "frame": None,
             "key": "case",
             "relative_path": "case.usda",
-            "output_root": str(tmp_path / "_output" / "run-0001"),
+            "output_root": str(tmp_path / "_output" / "run-0001" / "sample"),
             "reference": None,
             "reference_image": None,
             "renderer": "typhoon",
@@ -1177,8 +1283,8 @@ def test_dry_run_reports_run_directory_without_rendering(tmp_path: Path) -> None
     result = plugin.run_goldeneye_case(case, opts)
 
     assert result["status"] == "dry-run"
-    assert result["output_root"] == str(opts.run_context.run_dir)
-    assert result["render_output"].endswith("run-0001/rendered.case.exr")
+    assert result["output_root"] == str(opts.run_context.run_dir / "sample")
+    assert result["render_output"].endswith("run-0001/sample/rendered.case.exr")
     assert result["command"][0] == "usdrender"
 
 
@@ -1199,7 +1305,9 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
+    captured_compare: dict[str, object] = {}
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1207,22 +1315,25 @@ pattern = "{stem}.png"
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(plugin.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        plugin,
-        "compare_images",
-        lambda **kwargs: SimpleNamespace(
+    def fake_compare_images(**kwargs: object) -> SimpleNamespace:
+        captured_compare.update(kwargs)
+        return SimpleNamespace(
             flip_mean=0.01,
             reference_image=tmp_path / "reference.exr",
             render_image=tmp_path / "render.exr",
             diff_exr=tmp_path / "diff.exr",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(plugin, "compare_images", fake_compare_images)
 
     result = plugin.run_goldeneye_case(case, opts)
 
     assert result["status"] == "passed"
     assert result["comparison"] == "flip"
     assert result["flip_mean"] == 0.01
+    assert captured_compare["artifact_dir"] == opts.run_context.run_dir
+    assert captured_compare["key"] == "sample/case"
+    assert captured_compare["render_path"] == render_output
 
 
 def test_missing_reference_allowed_records_no_ref_status(
@@ -1239,7 +1350,8 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1272,7 +1384,8 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, require_references=True, require_thresholds=True, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1314,7 +1427,8 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1360,7 +1474,8 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1405,7 +1520,8 @@ case = 0.05
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1454,7 +1570,8 @@ flip_threshold = 0.05
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1493,7 +1610,8 @@ pattern = "{stem}.png"
     )
     case = plugin.build_case(usd)
     opts = options(tmp_path, require_references=True, dry_run=False)
-    render_output = opts.run_context.run_dir / "rendered.case.exr"
+    output_root = plugin.resolve_output_root(case, opts)
+    render_output = plugin.resolve_render_output(case, output_root)
 
     def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
         render_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1879,7 +1997,7 @@ pattern = "{path}.png"
     assert report[0]["status"] == "dry-run"
     assert report[0]["usd"] == str(usd)
     assert str(usd.resolve()) in report[0]["command"]
-    assert report[0]["render_output"] == str((run_dir / "case.exr").resolve())
+    assert report[0]["render_output"] == str((run_dir / "sample" / "case.exr").resolve())
     assert report[0]["reference"] == str((suite / "reference" / "case.png").resolve())
 
 
@@ -2280,9 +2398,9 @@ def test_html_report_styles_statuses_and_makes_columns_sortable(tmp_path: Path) 
                 "comparison": "flip",
                 "flip_mean": 0.2,
                 "flip_threshold": 0.25,
-                "render_output": str(context.run_dir / "material-fidelity" / "surfaces" / "g.exr"),
+                "render_output": str(context.run_dir / "surfaces" / "g.exr"),
                 "reference_image": str(context.run_dir / "reference" / "g.exr"),
-                "render_image": str(context.run_dir / "material-fidelity" / "surfaces" / "g.exr"),
+                "render_image": str(context.run_dir / "surfaces" / "g.exr"),
                 "diff_exr": str(context.run_dir / "flip" / "g.exr"),
             },
             {

@@ -10,7 +10,7 @@ output_root = "_output"
 
 [render]
 renderer = "typhoon"
-output_pattern = "{suite}/{path}.exr"
+output_pattern = "{path}.exr"
 
 [renderers.typhoon]
 command = [
@@ -18,7 +18,7 @@ command = [
   "--complexity", "high",
   "--renderer", "Embree",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 """
 

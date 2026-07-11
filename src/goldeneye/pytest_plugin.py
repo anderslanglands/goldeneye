@@ -171,9 +171,11 @@ class RenderCommandContext:
     usd_path: Path
     usd_relpath: str
     run_dir: Path
+    suite_output_root: Path
     output_dir: Path
     output_path: Path
     output_relpath: str
+    run_output_relpath: str
     path: str
     stem: str
     name: str
@@ -235,7 +237,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Override the configured render command for this pytest run. "
             "The value is parsed as a shell-style command template and "
             "supports the same fields as [render].command, including "
-            "{usd_path}, {run_dir}, {output_path}, and {frame}."
+            "{usd_path}, {suite_output_root}, {output_path}, and {frame}."
         ),
     )
 
@@ -715,7 +717,7 @@ def _run_goldeneye_case_impl(
             reference_path=reference,
             render_path=render_output,
             artifact_dir=artifact_root,
-            key=case.key,
+            key=case_artifact_key(case),
         )
     except Exception as exc:
         result["status"] = "failed-compare"
@@ -764,7 +766,12 @@ def build_render_command(
     if render_output is None:
         render_output = resolve_render_output(case, output_root)
     _renderer, command = resolve_render_command(case, options)
-    context = build_render_command_context(case, output_root, render_output)
+    context = build_render_command_context(
+        case,
+        options.run_context.run_dir,
+        output_root,
+        render_output,
+    )
     try:
         expanded = expand_render_command(command, context)
         if case.frame is not None and "frame" not in template_field_names(command):
@@ -799,7 +806,10 @@ def resolve_render_command(
 
 
 def build_render_command_context(
-    case: GoldeneyeCase, output_root: Path, render_output: Path
+    case: GoldeneyeCase,
+    run_dir: Path,
+    output_root: Path,
+    render_output: Path,
 ) -> RenderCommandContext:
     try:
         usd_relpath = case.path.relative_to(case.suite.root).as_posix()
@@ -811,16 +821,22 @@ def build_render_command_context(
         output_relpath = render_output.relative_to(output_root).as_posix()
     except ValueError:
         output_relpath = str(render_output)
+    try:
+        run_output_relpath = render_output.relative_to(run_dir).as_posix()
+    except ValueError:
+        run_output_relpath = str(render_output)
     return RenderCommandContext(
         project_root=case.suite.project_root,
         suite_root=case.suite.root,
         suite=case.suite.name,
         usd_path=case.path.resolve(),
         usd_relpath=usd_relpath,
-        run_dir=output_root.resolve(),
+        run_dir=run_dir.resolve(),
+        suite_output_root=output_root.resolve(),
         output_dir=render_output.parent.resolve(),
         output_path=render_output.resolve(),
         output_relpath=output_relpath,
+        run_output_relpath=run_output_relpath,
         path=path_stem,
         stem=case.path.stem,
         name=case.case_name,
@@ -856,9 +872,11 @@ def render_command_fields(context: RenderCommandContext) -> dict[str, object]:
         "usd_path": str(context.usd_path),
         "usd_relpath": context.usd_relpath,
         "run_dir": str(context.run_dir),
+        "suite_output_root": str(context.suite_output_root),
         "output_dir": str(context.output_dir),
         "output_path": str(context.output_path),
         "output_relpath": context.output_relpath,
+        "run_output_relpath": context.run_output_relpath,
         "path": context.path,
         "stem": context.stem,
         "name": context.name,
@@ -881,11 +899,27 @@ def template_field_names(command: tuple[str, ...]) -> set[str]:
 
 
 def resolve_output_root(case: GoldeneyeCase, options: GoldeneyeOptions) -> Path:
-    return options.run_context.run_dir
+    return options.run_context.run_dir / suite_output_dir_name(case.suite.name)
 
 
 def resolve_artifact_root(case: GoldeneyeCase, options: GoldeneyeOptions) -> Path:
     return options.run_context.run_dir
+
+
+def suite_output_dir_name(suite_name: str) -> str:
+    return encode_key_part(suite_name or "default")
+
+
+def case_artifact_key(case: GoldeneyeCase) -> str:
+    return f"{suite_output_dir_name(case.suite.name)}/{case.key}"
+
+
+def report_artifact_key(row: dict[str, Any], default_key: str) -> str:
+    key = str(row.get("key") or default_key)
+    suite = str(row.get("suite") or "")
+    if not suite:
+        return key
+    return f"{suite_output_dir_name(suite)}/{key}"
 
 
 def resolve_render_output(case: GoldeneyeCase, output_root: Path) -> Path:

@@ -20,7 +20,7 @@ DEFAULT_RENDER_COMMAND = (
     "Embree",
     "{usd_path}",
     "--outputRoot",
-    "{run_dir}",
+    "{suite_output_root}",
 )
 DEFAULT_RENDERER_NAME = "typhoon"
 

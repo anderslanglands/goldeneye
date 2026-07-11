@@ -12,21 +12,19 @@ Renderer support is pluggable: a suite can use the default `typhoon` renderer, d
 
 ## Quick Start
 
-Create the `test-suite` directory and install Goldeneye:
+Create a Pixi project, install Goldeneye, and initialize the project config:
 
 ```bash
-mkdir test-suite
-cd test-suite
 pixi init --format pixi --channel https://conda.anaconda.org/anderslanglands --channel conda-forge
 pixi add python=3.11 goldeneye
 pixi run goldeneye init
 ```
 
-Initialize the suite config and reference directory:
+Create a suite directory, suite config, and reference directory. This example uses `test-suite`, but the directory can have any name:
 
 ```bash
-mkdir -p reference
-cat > goldeneye-suite.toml <<'EOF'
+mkdir -p test-suite/reference
+cat > test-suite/goldeneye-suite.toml <<'EOF'
 [suite]
 name = "test-suite"
 
@@ -40,13 +38,15 @@ default_flip_threshold = 0.04
 EOF
 ```
 
-Add renderable USD fixtures in `test-suite/`, for example `simple.usda`, and put its reference image at `reference/simple.exr`. Goldeneye accepts `.usd`, `.usda`, `.usdc`, and `.usdz` files.
+Add renderable USD fixtures in the suite directory, for example `test-suite/simple.usda`, and put its reference image at `test-suite/reference/simple.exr`. Goldeneye accepts `.usd`, `.usda`, `.usdc`, and `.usdz` files.
 
-Run the suite:
+Run every discoverable suite from the project root:
 
 ```bash
 pixi run pytest
 ```
+
+Pytest walks the project normally, and Goldeneye collects USD fixtures below any directory containing `goldeneye-suite.toml`. The suite directory does not need to be named `test-suite`.
 
 Use a dry run first when checking command expansion:
 
@@ -56,21 +56,35 @@ pixi run pytest --goldeneye-dry-run -s
 
 ## Customizing
 
-A typical suite looks like this:
+A typical project can contain one or more suites:
 
 ```text
+pixi.toml
+goldeneye.toml
 test-suite/
-  pixi.toml
-  goldeneye.toml
   goldeneye-suite.toml
   simple.usda
   nested/case.usda
   _assets/shared.usda
   reference/simple.exr
   reference/nested/case.exr
+lighting/
+  goldeneye-suite.toml
+  dome/case.usda
+  reference/dome/case.exr
 ```
 
-A directory becomes a suite when it contains `goldeneye-suite.toml`. Goldeneye collects `.usd`, `.usda`, `.usdc`, and `.usdz` files below that directory. Use directories beginning with `_`, such as `_assets/`, for support layers and resources that should not be collected as tests.
+A directory becomes a suite when it contains `goldeneye-suite.toml`. Goldeneye collects `.usd`, `.usda`, `.usdc`, and `.usdz` files below every suite directory reached by pytest's normal discovery. Use directories beginning with `_`, such as `_assets/`, for support layers and resources that should not be collected as tests.
+
+Run all discovered suites, selected suites, sections, or individual fixtures by passing normal pytest paths:
+
+```bash
+pixi run pytest
+pixi run pytest test-suite
+pixi run pytest lighting test-suite
+pixi run pytest test-suite/nested
+pixi run pytest test-suite/nested/case.usda
+```
 
 Each fixture must be renderable by the configured renderer and must write an image where Goldeneye expects it. The default project config created by `pixi run goldeneye init` is:
 
@@ -80,7 +94,7 @@ output_root = "_output"
 
 [render]
 renderer = "typhoon"
-output_pattern = "{suite}/{path}.exr"
+output_pattern = "{path}.exr"
 
 [renderers.typhoon]
 command = [
@@ -88,11 +102,11 @@ command = [
   "--complexity", "high",
   "--renderer", "Embree",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 ```
 
-`output_pattern` is Goldeneye's expected render artifact path relative to the run directory. With the config above, `nested/case.usda` in suite `test-suite` is expected at `_output/run-NNNN/test-suite/nested/case.exr`. Make sure the USD render product authored by the fixture, or your renderer command, writes that path.
+`output_pattern` is Goldeneye's expected product path relative to the suite output root. With the config above, `nested/case.usda` in suite `test-suite` should author product name `nested/case.exr`; Goldeneye passes `{suite_output_root}` as `_output/run-NNNN/test-suite`, so the rendered file is expected at `_output/run-NNNN/test-suite/nested/case.exr`. Include `{suite}` in `output_pattern` only for a renderer that intentionally writes an extra suite-named subdirectory.
 
 References are resolved by the suite config:
 
@@ -112,8 +126,9 @@ _output/index.html
 _output/run-0001/index.html
 _output/run-0001/goldeneye-report.json
 _output/run-0001/run-summary.json
-_output/run-0001/<rendered images>
-_output/run-0001/comparison/<diff artifacts>
+_output/run-0001/test-suite/<rendered images>
+_output/run-0001/reference/test-suite/<copied references>
+_output/run-0001/flip/test-suite/<diff artifacts>
 ```
 
 Goldeneye chooses the next run number by scanning existing `_output/run-NNNN` directories and incrementing the highest number. Use `--goldeneye-output-root=/path/to/output` to put runs somewhere else.
@@ -131,7 +146,7 @@ command = [
   "--clean-env",
   "usdrender",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 ```
 
@@ -145,27 +160,29 @@ pixi run pytest test-suite --renderer local-typhoon
 
 Useful command template fields:
 
-| Field              | Expands to |
-| ------------------ | ---------- |
-| `{project_root}`   | Absolute path to the project root Goldeneye resolved for the run. This is normally the directory containing `goldeneye.toml`. |
-| `{suite_root}`     | Absolute path to the suite root, the directory containing the relevant `goldeneye-suite.toml`. |
-| `{suite}`          | Suite name from `[suite].name`. |
-| `{usd_path}`       | Absolute path to the USD fixture file being rendered. |
-| `{usd_relpath}`    | Fixture path relative to the suite root, including the file extension, for example `nested/case.usda`. |
-| `{run_dir}`        | Absolute path to the current numbered run directory, for example `_output/run-0007` after resolution. |
-| `{output_dir}`     | Absolute path to the parent directory of the render output Goldeneye expects for this case. |
-| `{output_path}`    | Absolute path to the render output Goldeneye expects for this case. |
-| `{output_relpath}` | Expected render output path relative to `{run_dir}`, for example `test-suite/nested/case.exr`. |
-| `{path}`           | Fixture path relative to the suite root with its USD file extension removed, for example `nested/case`. |
-| `{stem}`           | File stem of the fixture only, for example `case` for `nested/case.usda`. |
-| `{name}`           | Goldeneye case name, currently the fixture file stem. |
-| `{frame}`          | Frame value for frame-expanded cases. Using this field on a case without configured frames is an error. |
+| Field                  | Expands to |
+| ---------------------- | ---------- |
+| `{project_root}`       | Absolute path to the project root Goldeneye resolved for the run. This is normally the directory containing `goldeneye.toml`. |
+| `{suite_root}`         | Absolute path to the suite root, the directory containing the relevant `goldeneye-suite.toml`. |
+| `{suite}`              | Suite name from `[suite].name`. |
+| `{usd_path}`           | Absolute path to the USD fixture file being rendered. |
+| `{usd_relpath}`        | Fixture path relative to the suite root, including the file extension, for example `nested/case.usda`. |
+| `{run_dir}`            | Absolute path to the current numbered run directory, for example `_output/run-0007` after resolution. |
+| `{suite_output_root}`  | Absolute path to the suite-scoped render output root, for example `_output/run-0007/test-suite`. Pass this to renderers such as `usdrender --outputRoot` when USD product names are suite-relative. |
+| `{output_dir}`         | Absolute path to the parent directory of the render output Goldeneye expects for this case. |
+| `{output_path}`        | Absolute path to the render output Goldeneye expects for this case. |
+| `{output_relpath}`     | Expected render product path relative to `{suite_output_root}`, for example `nested/case.exr`. |
+| `{run_output_relpath}` | Expected render output path relative to `{run_dir}`, for example `test-suite/nested/case.exr`. |
+| `{path}`               | Fixture path relative to the suite root with its USD file extension removed, for example `nested/case`. |
+| `{stem}`               | File stem of the fixture only, for example `case` for `nested/case.usda`. |
+| `{name}`               | Goldeneye case name, currently the fixture file stem. |
+| `{frame}`              | Frame value for frame-expanded cases. Using this field on a case without configured frames is an error. |
 
 For a one-off run, override the command without editing config:
 
 ```bash
 pixi run pytest -k carpaint \
-  --render-command 'pixi run --manifest-path ../openusd-omniverse-typhoon-osl/pixi.toml --clean-env usdrender {usd_path} --outputRoot {run_dir}'
+  --render-command 'pixi run --manifest-path ../openusd-omniverse-typhoon-osl/pixi.toml --clean-env usdrender {usd_path} --outputRoot {suite_output_root}'
 ```
 
 That override still flows through the same render-command templating path and reports as renderer `command-line`.

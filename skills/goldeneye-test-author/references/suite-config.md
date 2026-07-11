@@ -1,13 +1,13 @@
 # Suite Config
 
-A suite is collected from `.usd`, `.usda`, `.usdc`, and `.usdz` files below a directory containing `goldeneye-suite.toml`.
+A suite is collected from `.usd`, `.usda`, `.usdc`, and `.usdz` files below a directory containing `goldeneye-suite.toml`. Render product paths should be relative to the suite output root, so `surfaces/case.usda` normally writes `surfaces/case.exr`, not `my-suite/surfaces/case.exr`; Goldeneye places that under `_output/run-NNNN/<suite>/`.
 
 ```toml
 [suite]
 name = "my-suite"
 
 [render]
-output_pattern = "my-suite/{path}.exr"
+output_pattern = "{path}.exr"
 
 [reference]
 dir = "reference"

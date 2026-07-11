@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .images import compare_images
-from .pytest_plugin import is_failure_result, write_run_outputs
+from .pytest_plugin import is_failure_result, report_artifact_key, write_run_outputs
 from .report_html import (
     REPORT_NAME,
     ReportRegenerationError,
@@ -103,7 +103,7 @@ def regenerate_run_comparisons(run_dir: Path) -> tuple[int, int]:
             reference_path=reference_path,
             render_path=render_path,
             artifact_dir=run_dir,
-            key=str(row.get("key", render_path.stem)),
+            key=report_artifact_key(row, render_path.stem),
         )
         row.update(
             {

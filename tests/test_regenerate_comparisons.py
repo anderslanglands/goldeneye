@@ -103,9 +103,9 @@ def test_regenerate_comparisons_defaults_to_latest_run_and_rewrites_reports(
     def fake_compare_images(**kwargs):
         calls.append(kwargs)
         return SimpleNamespace(
-            reference_image=latest / "reference" / "case.exr",
+            reference_image=latest / "reference" / "sample" / "case.exr",
             render_image=render,
-            diff_exr=latest / "flip" / "case.exr",
+            diff_exr=latest / "flip" / "sample" / "case.exr",
             flip_mean=0.2,
         )
 
@@ -119,22 +119,22 @@ def test_regenerate_comparisons_defaults_to_latest_run_and_rewrites_reports(
             "reference_path": reference,
             "render_path": render,
             "artifact_dir": latest.resolve(),
-            "key": "case",
+            "key": "sample/case",
         },
         {
             "reference_path": reference,
             "render_path": render,
             "artifact_dir": latest.resolve(),
-            "key": "strict",
+            "key": "sample/strict",
         },
     ]
     report = json.loads((latest / "goldeneye-report.json").read_text(encoding="utf-8"))
     assert report[0]["status"] == "failed-threshold"
     assert report[0]["comparison"] == "flip"
     assert report[0]["flip_mean"] == 0.2
-    assert report[0]["reference_image"] == str(latest / "reference" / "case.exr")
+    assert report[0]["reference_image"] == str(latest / "reference" / "sample" / "case.exr")
     assert report[0]["render_image"] == str(render)
-    assert report[0]["diff_exr"] == str(latest / "flip" / "case.exr")
+    assert report[0]["diff_exr"] == str(latest / "flip" / "sample" / "case.exr")
     assert "reference_png" not in report[0]
     assert "render_png" not in report[0]
     assert "diff_png" not in report[0]

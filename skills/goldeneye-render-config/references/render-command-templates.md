@@ -12,7 +12,7 @@ command = [
   "--complexity", "high",
   "--renderer", "Embree",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 ```
 
@@ -31,8 +31,8 @@ command = [
   "--complexity", "high",
   "--renderer", "Embree",
   "{usd_path}",
-  "--outputRoot", "{run_dir}",
+  "--outputRoot", "{suite_output_root}",
 ]
 ```
 
-Use `{frame}` only for frame-expanded tests. Goldeneye reports a config error if a command uses `{frame}` on a non-frame case.
+With the default `output_pattern = "{path}.exr"`, `{output_relpath}` expands to a suite-relative product such as `nodes/math/case.exr`; `{suite_output_root}` points at the per-suite directory under the numbered run. Use `{frame}` only for frame-expanded tests. Goldeneye reports a config error if a command uses `{frame}` on a non-frame case.

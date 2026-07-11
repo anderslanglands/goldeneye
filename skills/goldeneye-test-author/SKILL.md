@@ -10,8 +10,8 @@ Use this skill when adding or updating Goldeneye USD render tests, references, t
 4. Use deterministic render products and the suite default reference pattern unless the case genuinely needs a custom `[reference].path`.
 5. Add `customLayerData.doc` when expected visual behavior is not obvious from the fixture.
 6. Use `[comparison].flip_threshold`, `[test].xfail`, `[test].suspect`, and `[test].expected-failure` only when they describe intended suite behavior.
-7. Run `pixi run pytest <suite> --collect-only -q` before rendering.
-8. Run a focused render or `--goldeneye-dry-run -s` to verify command generation.
+7. Run `pixi run pytest --collect-only -q` before rendering when the suite directory is `test-suite`; otherwise pass the suite path explicitly.
+8. Run a focused render or `pixi run pytest --goldeneye-dry-run -s` to verify command generation.
 9. Use `goldeneye update-references` only when the user intends to publish reference updates.
 
 See `references/suite-config.md` and `references/fixture-patterns.md` for examples.

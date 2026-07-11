@@ -9,7 +9,7 @@ Use this skill when customizing renderer commands, running against a local rende
 3. Put broad defaults in `goldeneye.toml` or `goldeneye-suite.toml`.
 4. Put exceptional behavior in `<test>.goldeneye.toml`.
 5. Use template fields such as `{usd_path}`, `{output_path}`, `{run_dir}`, and `{frame}`.
-6. Verify with `pixi run pytest <suite> --collect-only -q`.
-7. Verify command expansion with `pixi run pytest <suite> --goldeneye-dry-run -s`.
+6. Verify with `pixi run pytest --collect-only -q` when the suite directory is `test-suite`; otherwise pass the suite path explicitly.
+7. Verify command expansion with `pixi run pytest --goldeneye-dry-run -s` or a focused explicit suite path.
 
 See `references/render-command-templates.md` for examples.
