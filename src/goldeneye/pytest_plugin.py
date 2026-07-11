@@ -18,8 +18,11 @@ import pytest
 
 from .config import (
     CaseConfig,
+    DEFAULT_RENDER_COMMAND,
+    DEFAULT_RENDERER_NAME,
     FrameValue,
     SuiteConfig,
+    USD_FILE_SUFFIXES,
     format_pattern,
     find_suite_config,
     load_case_config,
@@ -108,7 +111,7 @@ IGNORED_DIRS = {
     "renders",
 }
 
-DEFAULT_PROVIDER_LABEL = "package"
+COMMAND_LINE_RENDERER_LABEL = "command-line"
 EXPECTED_FAILURE_STATUS = "expected-failure"
 
 
@@ -118,7 +121,11 @@ class RunContext:
     run_dir: Path
     run_number: int
     started_at: str
-    provider: str | None = None
+    renderer: str | None = None
+
+    @property
+    def provider(self) -> str | None:
+        return self.renderer
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,7 @@ class GoldeneyeOptions:
     require_references: bool
     require_thresholds: bool
     dry_run: bool
+    renderer: str | None = None
     render_command: tuple[str, ...] | None = None
 
 
@@ -204,13 +212,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--goldeneye-collect-unconfigured",
         action="store_true",
         default=False,
-        help="Collect .usda files without an ancestor goldeneye-suite.toml.",
+        help="Collect USD files without an ancestor goldeneye-suite.toml.",
     )
     group.addoption(
         "--goldeneye-dry-run",
         action="store_true",
         default=False,
         help="Print render commands without executing them.",
+    )
+    group.addoption(
+        "--renderer",
+        action="store",
+        default=None,
+        help="Select a configured renderer by name for this pytest run.",
     )
     group.addoption(
         "--render-command",
@@ -260,7 +274,7 @@ def path_has_ignored_directory(path: Path, _root: Path) -> bool:
 
 
 def should_collect_usda(path: Path, root: Path, collect_unconfigured: bool) -> bool:
-    if path.suffix != ".usda":
+    if path.suffix.lower() not in USD_FILE_SUFFIXES:
         return False
     if path_has_ignored_directory(path, root):
         return False
@@ -415,19 +429,27 @@ def sanitize_key_part(value: str) -> str:
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in value)
 
 
+def renderer_label(renderer: object | None) -> str:
+    if renderer is None:
+        return DEFAULT_RENDERER_NAME
+    value = str(renderer)
+    return value if value else DEFAULT_RENDERER_NAME
+
+
 def provider_label(provider: object | None) -> str:
-    if provider is None:
-        return DEFAULT_PROVIDER_LABEL
-    value = str(provider)
-    return value if value else DEFAULT_PROVIDER_LABEL
+    return renderer_label(provider)
+
+
+def first_result_renderer(results: list[dict[str, Any]]) -> str | None:
+    for row in results:
+        renderer = row.get("renderer", row.get("provider"))
+        if renderer:
+            return str(renderer)
+    return None
 
 
 def first_result_provider(results: list[dict[str, Any]]) -> str | None:
-    for row in results:
-        provider = row.get("provider")
-        if provider:
-            return str(provider)
-    return None
+    return first_result_renderer(results)
 
 
 def options_from_config(config: pytest.Config) -> GoldeneyeOptions:
@@ -437,8 +459,18 @@ def options_from_config(config: pytest.Config) -> GoldeneyeOptions:
         require_references=bool(config.getoption("--goldeneye-require-references")),
         require_thresholds=bool(config.getoption("--goldeneye-require-thresholds")),
         dry_run=bool(config.getoption("--goldeneye-dry-run")),
+        renderer=parse_renderer_option(config.getoption("--renderer")),
         render_command=parse_render_command_option(config.getoption("--render-command")),
     )
+
+
+def parse_renderer_option(value: str | None) -> str | None:
+    if value is None:
+        return None
+    renderer = value.strip()
+    if not renderer:
+        raise pytest.UsageError("--renderer must not be empty")
+    return renderer
 
 
 def parse_render_command_option(value: str | None) -> tuple[str, ...] | None:
@@ -467,7 +499,10 @@ def get_run_context(config: pytest.Config) -> RunContext:
     if not output_base.is_absolute():
         output_base = project_config.root / output_base
 
-    context = allocate_run_context(output_base.resolve(), provider=DEFAULT_PROVIDER_LABEL)
+    renderer = project_config.renderer
+    if config.getoption("--render-command") is not None:
+        renderer = COMMAND_LINE_RENDERER_LABEL
+    context = allocate_run_context(output_base.resolve(), renderer=renderer)
     config._goldeneye_run_context = context  # type: ignore[attr-defined]
     return context
 
@@ -475,6 +510,7 @@ def get_run_context(config: pytest.Config) -> RunContext:
 def allocate_run_context(
     output_base: Path,
     started_at: str | None = None,
+    renderer: str | None = None,
     provider: str | None = None,
 ) -> RunContext:
     output_base = output_base.resolve()
@@ -494,7 +530,7 @@ def allocate_run_context(
             run_dir=run_dir,
             run_number=run_number,
             started_at=started_at,
-            provider=provider_label(provider),
+            renderer=renderer_label(renderer if renderer is not None else provider),
         )
 
 
@@ -561,7 +597,7 @@ def _run_goldeneye_case_impl(case: GoldeneyeCase, options: GoldeneyeOptions) -> 
         "run_number": options.run_context.run_number,
         "run_dir": str(options.run_context.run_dir),
         "started_at": options.run_context.started_at,
-        "provider": provider_label(options.run_context.provider),
+        "renderer": renderer_label(selected_renderer_name(case, options)),
     }
     if usd_doc:
         result["usd_doc"] = usd_doc
@@ -697,7 +733,7 @@ def build_render_command(
 ) -> list[str]:
     if render_output is None:
         render_output = resolve_render_output(case, output_root)
-    command = options.render_command or case.case_config.render_command or case.suite.render_command
+    _renderer, command = resolve_render_command(case, options)
     context = build_render_command_context(case, output_root, render_output)
     try:
         expanded = expand_render_command(command, context)
@@ -706,6 +742,30 @@ def build_render_command(
         return expanded
     except ValueError as exc:
         raise GoldeneyeRenderError(str(exc)) from exc
+
+
+def selected_renderer_name(case: GoldeneyeCase, options: GoldeneyeOptions) -> str:
+    if options.render_command is not None:
+        return COMMAND_LINE_RENDERER_LABEL
+    if options.renderer is not None:
+        return renderer_label(options.renderer)
+    return renderer_label(case.case_config.renderer or case.suite.renderer)
+
+
+def resolve_render_command(
+    case: GoldeneyeCase, options: GoldeneyeOptions
+) -> tuple[str, tuple[str, ...]]:
+    renderer = selected_renderer_name(case, options)
+    if options.render_command is not None:
+        return renderer, options.render_command
+    if case.case_config.render_command is not None:
+        return renderer, case.case_config.render_command
+    try:
+        return renderer, case.suite.renderers[renderer]
+    except KeyError as exc:
+        raise GoldeneyeRenderError(
+            f"renderer {renderer!r} is not configured for suite {case.suite.name!r}"
+        ) from exc
 
 
 def build_render_command_context(
@@ -950,7 +1010,7 @@ def summarize_results(context: RunContext, results: list[dict[str, Any]]) -> dic
         "run_name": context.run_dir.name,
         "run_number": context.run_number,
         "started_at": context.started_at,
-        "provider": provider_label(context.provider or first_result_provider(results)),
+        "renderer": renderer_label(first_result_renderer(results) or context.renderer),
         "run_dir": str(context.run_dir),
         "total": len(results),
         "compared": len(compared),
@@ -1869,7 +1929,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     nav_flip_mean = format_flip_stat(summary.get("flip_mean"))
     nav_flip_min = format_flip_stat(summary.get("flip_min"))
     nav_flip_max = format_flip_stat(summary.get("flip_max"))
-    nav_provider = provider_label(summary.get("provider"))
+    nav_renderer = renderer_label(summary.get("renderer", summary.get("provider")))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1900,8 +1960,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     .top-nav-stats {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; color: #bbb; }}
     .top-nav-stat {{ white-space: nowrap; }}
     .top-nav-stat strong {{ color: #fff; font-weight: 700; }}
-    .top-nav-provider {{ display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 360px; }}
-    .top-nav-provider strong {{ display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }}
+    .top-nav-renderer {{ display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 360px; }}
+    .top-nav-renderer strong {{ display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }}
     .top-nav-controls {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; color: #bbb; }}
     .top-nav-controls label {{ color: #eee; font-weight: 700; }}
     .top-nav-controls select, .top-nav-controls input[type="search"] {{ color: #eee; background: #181818; border: 1px solid #4a5568; border-radius: 4px; padding: 5px 8px; font: inherit; }}
@@ -2004,7 +2064,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
       <span class="top-nav-stat"><strong>{summary['failed']}</strong> failed</span>
       <span class="top-nav-stat"><strong>{summary.get('expected_failures', 0)}</strong> expected failures</span>
       <span class="top-nav-stat"><strong>{summary.get('suspect', 0)}</strong> suspect</span>
-      <span class="top-nav-stat top-nav-provider">Provider <strong title="{esc(nav_provider)}">{esc(nav_provider)}</strong></span>
+      <span class="top-nav-stat top-nav-renderer">Renderer: <strong title="{esc(nav_renderer)}">{esc(nav_renderer)}</strong></span>
       <span class="top-nav-stat">Mean FLIP <strong>{nav_flip_mean}</strong></span>
       <span class="top-nav-stat">Min <strong>{nav_flip_min}</strong></span>
       <span class="top-nav-stat">Max <strong>{nav_flip_max}</strong></span>

@@ -19,7 +19,7 @@ def write_run(output_root: Path, run_number: int, rows: list[dict[str, object]])
         row.setdefault("run_number", run_number)
         row.setdefault("run_dir", str(run_dir))
         row.setdefault("started_at", "2026-06-30T00:00:00+00:00")
-        row.setdefault("provider", "package")
+        row.setdefault("renderer", "typhoon")
     (run_dir / "goldeneye-report.json").write_text(
         json.dumps(rows, indent=2) + "\n",
         encoding="utf-8",
@@ -30,7 +30,7 @@ def write_run(output_root: Path, run_number: int, rows: list[dict[str, object]])
                 "run_name": run_dir.name,
                 "run_number": run_number,
                 "started_at": "2026-06-30T00:00:00+00:00",
-                "provider": "package",
+                "renderer": "typhoon",
                 "run_dir": str(run_dir),
                 "total": len(rows),
                 "compared": 0,

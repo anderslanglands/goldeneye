@@ -57,6 +57,36 @@ def test_discovers_one_group_per_nested_reference_subsection(tmp_path: Path) -> 
     assert roots == [(tmp_path / "sample" / "reference").resolve()]
 
 
+def test_discovers_references_for_supported_usd_extensions(tmp_path: Path) -> None:
+    suite = tmp_path / "sample"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """[suite]
+name = "sample"
+
+[reference]
+dir = "reference"
+pattern = "{path}.png"
+missing = "fail"
+""",
+        encoding="utf-8",
+    )
+    references = []
+    for suffix in (".usd", ".usda", ".usdc", ".usdz"):
+        stem = suffix.removeprefix(".")
+        (suite / f"case-{stem}{suffix}").write_bytes(b"#usda 1.0\n")
+        reference = suite / "reference" / f"case-{stem}.png"
+        reference.parent.mkdir(exist_ok=True)
+        reference.write_bytes(b"reference")
+        references.append(reference.resolve())
+    load_suite_config_for_path.cache_clear()
+
+    groups, roots = archives.discover_reference_groups(tmp_path)
+
+    assert groups == {"sample": sorted(references)}
+    assert roots == [(suite / "reference").resolve()]
+
+
 def test_discovers_per_case_reference_paths_outside_suite_reference_dir(tmp_path: Path) -> None:
     usd, _default_reference = make_suite(tmp_path)
     custom_reference = tmp_path / "sample" / "custom-refs" / "case.png"

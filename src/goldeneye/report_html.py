@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from .config import USD_FILE_SUFFIXES
 from .pytest_plugin import (
     RUN_DIR_RE,
     RunContext,
@@ -13,7 +14,7 @@ from .pytest_plugin import (
     copy_report_assets,
     copy_report_favicon,
     summarize_results,
-    provider_label,
+    renderer_label,
     read_text_file,
 )
 
@@ -130,7 +131,7 @@ def legacy_usda_source_path(
     )
     for candidate in candidates:
         path = candidate.resolve()
-        if path.suffix != ".usda" or not path.is_file():
+        if path.suffix.lower() not in USD_FILE_SUFFIXES or not path.is_file():
             continue
         if any(is_relative_to(path, root) for root in allowed_roots):
             return path
@@ -186,13 +187,13 @@ def build_run_context(run_dir: Path, results: list[dict[str, Any]]) -> RunContex
     match = RUN_DIR_RE.match(run_dir.name)
     run_number = int(summary.get("run_number") or (match.group(1) if match else 0))
     started_at = str(summary.get("started_at") or first_started_at(results))
-    provider = summary.get("provider") or first_provider(results)
+    renderer = summary.get("renderer", summary.get("provider")) or first_renderer(results)
     return RunContext(
         output_base=run_dir.parent,
         run_dir=run_dir,
         run_number=run_number,
         started_at=started_at,
-        provider=provider_label(provider),
+        renderer=renderer_label(renderer),
     )
 
 
@@ -204,12 +205,16 @@ def first_started_at(results: list[dict[str, Any]]) -> str:
     return ""
 
 
-def first_provider(results: list[dict[str, Any]]) -> str:
+def first_renderer(results: list[dict[str, Any]]) -> str:
     for result in results:
-        provider = result.get("provider")
-        if provider:
-            return str(provider)
+        renderer = result.get("renderer", result.get("provider"))
+        if renderer:
+            return str(renderer)
     return ""
+
+
+def first_provider(results: list[dict[str, Any]]) -> str:
+    return first_renderer(results)
 
 
 def read_json_list(path: Path) -> list[dict[str, Any]]:

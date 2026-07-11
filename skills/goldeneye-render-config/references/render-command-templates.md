@@ -4,6 +4,9 @@ Default Typhoon/OpenUSD command:
 
 ```toml
 [render]
+renderer = "typhoon"
+
+[renderers.typhoon]
 command = [
   "usdrender",
   "--complexity", "high",
@@ -17,6 +20,9 @@ Local renderer checkout example:
 
 ```toml
 [render]
+renderer = "local-typhoon"
+
+[renderers.local-typhoon]
 command = [
   "pixi", "run",
   "--manifest-path", "/home/anders/code/openusd-omniverse/pixi.toml",

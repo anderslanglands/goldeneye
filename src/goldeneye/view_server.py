@@ -14,13 +14,13 @@ import tomllib
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .config import find_suite_config, format_pattern, load_suite_config_for_path
+from .config import USD_FILE_SUFFIXES, find_suite_config, format_pattern, load_suite_config_for_path
 
 USDVIEW_ENDPOINT = "/__goldeneye__/usdview"
 UPDATE_THRESHOLDS_ENDPOINT = "/__goldeneye__/thresholds"
 UPDATE_REFERENCES_ENDPOINT = "/__goldeneye__/references"
 UPDATE_SUSPECTS_ENDPOINT = "/__goldeneye__/suspects"
-USD_SUFFIXES = {".usd", ".usda", ".usdc"}
+USD_SUFFIXES = USD_FILE_SUFFIXES
 LDR_IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
 IMAGE_SUFFIXES = {".exr", *LDR_IMAGE_SUFFIXES}
 MAX_JSON_PAYLOAD_BYTES = 1024 * 1024
@@ -173,7 +173,7 @@ def _resolve_usd_path(value: object, *, project_root: Path) -> Path:
         path = project_root / path
     path = path.resolve()
     if path.suffix.lower() not in USD_SUFFIXES:
-        raise ViewServerError("usd path must end in .usd, .usda, or .usdc")
+        raise ViewServerError("usd path must end in .usd, .usda, .usdc, or .usdz")
     if not path.is_file():
         raise ViewServerError(f"usd path does not exist: {path}")
     return path

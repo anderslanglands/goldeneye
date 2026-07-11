@@ -10,7 +10,7 @@ from .pytest_plugin import (
     RunContext,
     allocate_run_context,
     is_failure_result,
-    provider_label,
+    renderer_label,
     write_run_outputs,
 )
 from .report_html import (
@@ -71,7 +71,7 @@ def extract_failures(
     target_context = allocate_run_context(
         source_run.parent,
         started_at=started_at,
-        provider=source_context.provider,
+        renderer=source_context.renderer,
     )
     target_results = [
         extract_failure_row(row, source_run, target_context) for row in failures
@@ -121,7 +121,8 @@ def extract_failure_row(
     extracted["run_number"] = target_context.run_number
     extracted["run_dir"] = str(target_run)
     extracted["started_at"] = target_context.started_at
-    extracted["provider"] = provider_label(target_context.provider)
+    extracted.pop("provider", None)
+    extracted["renderer"] = renderer_label(target_context.renderer)
     return extracted
 
 

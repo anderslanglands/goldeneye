@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import goldeneye.cli as cli
 import goldeneye.pytest_plugin as plugin
 import goldeneye.report_html as report_html
 import goldeneye.view_server as view_server
@@ -53,6 +54,7 @@ output_pattern = "rendered.{stem}.exr"
 def run_context(
     tmp_path: Path,
     run_number: int = 1,
+    renderer: str | None = None,
     provider: str | None = None,
 ) -> RunContext:
     output_base = tmp_path / "_output"
@@ -62,7 +64,7 @@ def run_context(
         run_dir=run_dir,
         run_number=run_number,
         started_at="2026-06-30T00:00:00+00:00",
-        provider=provider,
+        renderer=renderer if renderer is not None else provider,
     )
 
 
@@ -73,6 +75,7 @@ def options(tmp_path: Path, **overrides: object) -> GoldeneyeOptions:
         "require_references": False,
         "require_thresholds": False,
         "dry_run": True,
+        "renderer": None,
         "render_command": None,
     }
     values.update(overrides)
@@ -359,6 +362,7 @@ def test_render_command_option_overrides_configured_command(tmp_path: Path) -> N
         "rendered.case.exr",
     ]
     assert "--disableCameraLight" not in report[0]["command"]
+    assert report[0]["renderer"] == "command-line"
 
 
 def test_render_command_option_preserves_quoted_arguments(tmp_path: Path) -> None:
@@ -372,6 +376,11 @@ def test_render_command_option_preserves_quoted_arguments(tmp_path: Path) -> Non
 def test_render_command_option_rejects_empty_command() -> None:
     with pytest.raises(pytest.UsageError, match="must not be empty"):
         plugin.parse_render_command_option("")
+
+
+def test_renderer_option_rejects_empty_name() -> None:
+    with pytest.raises(pytest.UsageError, match="must not be empty"):
+        plugin.parse_renderer_option("   ")
 
 
 def test_project_config_supplies_output_root_command_and_output_pattern(
@@ -413,6 +422,185 @@ output_pattern = "project/{path}.exr"
         "project/case.exr",
     ]
     assert report[0]["render_output"] == str((run_dir / "project" / "case.exr").resolve())
+
+
+def test_project_config_selects_named_renderer(tmp_path: Path) -> None:
+    (tmp_path / "goldeneye.toml").write_text(
+        """
+[goldeneye]
+output_root = "custom-output"
+
+[render]
+renderer = "storm"
+output_pattern = "project/{path}.exr"
+
+[renderers.storm]
+command = ["storm-render", "--scene", "{usd_relpath}", "--out", "{output_relpath}"]
+""",
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_dir = tmp_path / "custom-output" / "run-0001"
+    report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert report[0]["renderer"] == "storm"
+    assert summary["renderer"] == "storm"
+    assert report[0]["command"] == [
+        "storm-render",
+        "--scene",
+        "case.usda",
+        "--out",
+        "project/case.exr",
+    ]
+
+
+def test_renderer_option_selects_configured_renderer_for_run(tmp_path: Path) -> None:
+    (tmp_path / "goldeneye.toml").write_text(
+        """
+[render]
+output_pattern = "project/{path}.exr"
+
+[renderers.typhoon]
+command = ["usdrender", "{usd_path}", "--outputRoot", "{run_dir}"]
+
+[renderers.local-typhoon]
+command = ["local-render", "--scene", "{usd_relpath}", "--out", "{output_relpath}"]
+""",
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "--renderer",
+        "local-typhoon",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(
+        (tmp_path / "_output" / "run-0001" / "goldeneye-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    summary = json.loads(
+        (tmp_path / "_output" / "run-0001" / "run-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    html = (tmp_path / "_output" / "run-0001" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert report[0]["renderer"] == "local-typhoon"
+    assert summary["renderer"] == "local-typhoon"
+    assert 'Renderer: <strong title="local-typhoon">local-typhoon</strong>' in html
+    assert report[0]["command"] == [
+        "local-render",
+        "--scene",
+        "case.usda",
+        "--out",
+        "project/case.exr",
+    ]
+
+
+def test_case_config_can_select_named_renderer(tmp_path: Path) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """
+[suite]
+name = "sample"
+
+[renderers.typhoon]
+command = ["usdrender", "{usd_path}", "--outputRoot", "{run_dir}"]
+
+[renderers.storm]
+command = ["storm-render", "{usd_relpath}", "{output_relpath}"]
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        '[render]\nrenderer = "storm"\n', encoding="utf-8"
+    )
+    case = plugin.build_case(usd)
+    opts = options(tmp_path)
+
+    cmd = plugin.build_render_command(case, opts, opts.run_context.run_dir)
+
+    assert case.case_config.renderer == "storm"
+    assert plugin.selected_renderer_name(case, opts) == "storm"
+    assert cmd == ["storm-render", "case.usda", "case.exr"]
+
+
+def test_missing_named_renderer_fails_command_resolution(tmp_path: Path) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    usd.with_suffix(".goldeneye.toml").write_text(
+        '[render]\nrenderer = "missing"\n', encoding="utf-8"
+    )
+    case = plugin.build_case(usd)
+
+    with pytest.raises(GoldeneyeRenderError, match="missing"):
+        plugin.build_render_command(case, options(tmp_path), tmp_path / "_output" / "run-0001")
+
+
+def test_cli_init_writes_default_named_renderer_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["init"]) == 0
+
+    captured = capsys.readouterr()
+    assert "wrote goldeneye.toml" in captured.out
+    config_text = (tmp_path / "goldeneye.toml").read_text(encoding="utf-8")
+    assert '[render]\nrenderer = "typhoon"' in config_text
+    assert "[renderers.typhoon]" in config_text
+    project = plugin.load_project_config_for_path(str(tmp_path))
+    assert project.renderer == "typhoon"
+    assert project.renderers["typhoon"] == plugin.DEFAULT_RENDER_COMMAND
+
+
+def test_cli_init_refuses_to_overwrite_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "goldeneye.toml"
+    config.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["init"])
+
+    assert excinfo.value.code == 1
+    assert config.read_text(encoding="utf-8") == "existing"
+    assert cli.main(["init", "--force"]) == 0
+    assert "[renderers.typhoon]" in config.read_text(encoding="utf-8")
 
 
 def test_project_config_rejects_legacy_render_args(tmp_path: Path) -> None:
@@ -511,11 +699,11 @@ def test_custom_command_dry_run_is_reported(tmp_path: Path) -> None:
     assert len(report) == 1
     assert report[0]["key"] == "case"
     assert report[0]["status"] == "dry-run"
-    assert report[0]["provider"] == "package"
+    assert report[0]["renderer"] == "typhoon"
     summary = json.loads(
         (tmp_path / "_output" / "run-0001" / "run-summary.json").read_text(encoding="utf-8")
     )
-    assert summary["provider"] == "package"
+    assert summary["renderer"] == "typhoon"
     command = report[0]["command"]
     assert command[:5] == ["usdrender", "--complexity", "high", "--renderer", "Embree"]
     assert "--disableCameraLight" in command
@@ -957,7 +1145,7 @@ output_pattern = "{stem}-embree.{frame:04d}.exr"
             "output_root": str(tmp_path / "_output" / "run-0001"),
             "reference": None,
             "reference_image": None,
-            "provider": "package",
+            "renderer": "typhoon",
             "render_image": None,
             "render_output": None,
             "run_dir": str(tmp_path / "_output" / "run-0001"),
@@ -976,7 +1164,7 @@ output_pattern = "{stem}-embree.{frame:04d}.exr"
     assert summary["total"] == 1
     assert summary["failed"] == 1
     assert summary["suspect"] == 0
-    assert summary["provider"] == "package"
+    assert summary["renderer"] == "typhoon"
 
 
 def test_dry_run_reports_run_directory_without_rendering(tmp_path: Path) -> None:
@@ -1399,6 +1587,39 @@ def test_unconfigured_usdas_are_not_collected_by_default(tmp_path: Path) -> None
     assert plugin.should_collect_usda(usd, tmp_path, collect_unconfigured=True)
 
 
+@pytest.mark.parametrize("suffix", [".usd", ".usda", ".usdc", ".usdz"])
+def test_supported_usd_extensions_are_collected(tmp_path: Path, suffix: str) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """[suite]
+name = "sample"
+
+[reference]
+dir = "reference"
+pattern = "{path}.png"
+""",
+        encoding="utf-8",
+    )
+    usd = suite / f"case{suffix}"
+    usd.write_bytes(b"#usda 1.0\n")
+
+    assert plugin.should_collect_usda(usd, tmp_path, collect_unconfigured=False)
+
+    completed = run_pytest_with_plugin(
+        tmp_path, str(suite), "--goldeneye-dry-run", "-s", "-q"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_dir = tmp_path / "_output" / "run-0001"
+    report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    assert report[0]["status"] == "dry-run"
+    assert report[0]["usd"] == str(usd)
+    assert str(usd.resolve()) in report[0]["command"]
+    assert report[0]["render_output"] == str((run_dir / "case.exr").resolve())
+    assert report[0]["reference"] == str((suite / "reference" / "case.png").resolve())
+
+
 def test_underscore_directories_are_never_collected(tmp_path: Path) -> None:
     suite = tmp_path / "suite"
     hidden = suite / "sections" / "_assets" / "support.usda"
@@ -1648,20 +1869,20 @@ def test_run_outputs_write_per_run_report_and_top_level_index(tmp_path: Path) ->
     assert "2026-06-30T00:00:00+00:00" in output_index
 
 
-def test_html_report_top_nav_shows_provider(tmp_path: Path) -> None:
-    provider = 'local<foo&"bar'
-    html = plugin.build_html_report([], run_context(tmp_path, provider=provider))
+def test_html_report_top_nav_shows_renderer(tmp_path: Path) -> None:
+    renderer = 'local<foo&"bar'
+    html = plugin.build_html_report([], run_context(tmp_path, renderer=renderer))
 
     assert (
-        'Provider <strong title="local&lt;foo&amp;&quot;bar">'
+        'Renderer: <strong title="local&lt;foo&amp;&quot;bar">'
         'local&lt;foo&amp;&quot;bar</strong>'
     ) in html
 
 
-def test_html_report_top_nav_defaults_to_package_provider(tmp_path: Path) -> None:
+def test_html_report_top_nav_defaults_to_typhoon_renderer(tmp_path: Path) -> None:
     html = plugin.build_html_report([], run_context(tmp_path))
 
-    assert 'Provider <strong title="package">package</strong>' in html
+    assert 'Renderer: <strong title="typhoon">typhoon</strong>' in html
 
 
 def test_html_counts_strict_failures(tmp_path: Path) -> None:
@@ -3481,12 +3702,30 @@ def test_html_report_normalizes_legacy_status_labels(tmp_path: Path) -> None:
     ]
 
 
-def test_regenerate_html_preserves_provider_in_nav(tmp_path: Path) -> None:
+def test_regenerate_html_preserves_renderer_in_nav(tmp_path: Path) -> None:
+    output_base = tmp_path / "_output"
+    run_dir = write_report_run(output_base, 1, key="case")
+    renderer = "storm"
+    summary_path = run_dir / "run-summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["renderer"] = renderer
+    summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+
+    report_html.regenerate_html(output_root=output_base, run="run-0001")
+
+    html = (run_dir / "index.html").read_text(encoding="utf-8")
+    regenerated_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert f'Renderer: <strong title="{renderer}">{renderer}</strong>' in html
+    assert regenerated_summary["renderer"] == renderer
+
+
+def test_regenerate_html_uses_legacy_provider_as_renderer(tmp_path: Path) -> None:
     output_base = tmp_path / "_output"
     run_dir = write_report_run(output_base, 1, key="case")
     provider = str(tmp_path / "openusd")
     summary_path = run_dir / "run-summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("renderer", None)
     summary["provider"] = provider
     summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
 
@@ -3494,8 +3733,8 @@ def test_regenerate_html_preserves_provider_in_nav(tmp_path: Path) -> None:
 
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     regenerated_summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert f'Provider <strong title="{provider}">{provider}</strong>' in html
-    assert regenerated_summary["provider"] == provider
+    assert f'Renderer: <strong title="{provider}">{provider}</strong>' in html
+    assert regenerated_summary["renderer"] == provider
 
 
 def test_regenerate_html_defaults_to_latest_run(tmp_path: Path) -> None:
@@ -3861,6 +4100,18 @@ def test_view_server_launches_usdview_command(
     ]
 
 
+def test_view_server_accepts_usdz_paths(tmp_path: Path) -> None:
+    usd = tmp_path / "scene.usdz"
+    usd.write_bytes(b"PK\x03\x04")
+
+    command = view_server.build_usdview_command(
+        {"usd": str(usd), "camera": "/cameras/camera1", "frame": 12},
+        project_root=tmp_path,
+    )
+
+    assert command[-1] == str(usd.resolve())
+
+
 
 def test_view_server_endpoint_launches_and_rejects_invalid_payloads(
     tmp_path: Path,
@@ -3970,11 +4221,11 @@ def test_view_server_update_endpoints_mutate_source_files_on_disk(
     (suite_dir / "goldeneye-suite.toml").write_text(
         "[suite]\nname = \"sample\"\n", encoding="utf-8"
     )
-    reference_usd = suite_dir / "reference-case.usda"
-    reference_usd.write_text("#usda 1.0\n", encoding="utf-8")
+    reference_usd = suite_dir / "reference-case.usdz"
+    reference_usd.write_bytes(b"PK\x03\x04")
 
-    threshold_usd = suite_dir / "threshold-case.usda"
-    threshold_usd.write_text("#usda 1.0\n", encoding="utf-8")
+    threshold_usd = suite_dir / "threshold-case.usdz"
+    threshold_usd.write_bytes(b"PK\x03\x04")
     reference = suite_dir / "reference" / "reference-case.exr"
     reference.parent.mkdir()
     reference.write_bytes(b"old-reference")

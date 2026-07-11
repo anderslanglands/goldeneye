@@ -18,7 +18,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 import zipfile
 
-from .config import SUITE_CONFIG_NAME, load_suite_config_for_path
+from .config import SUITE_CONFIG_NAME, USD_FILE_SUFFIXES, load_suite_config_for_path
 from .pytest_plugin import RunContext, GoldeneyeOptions, build_cases, resolve_reference
 
 
@@ -127,7 +127,11 @@ def discover_reference_groups(
 
     for suite_root in discover_suite_roots(project_root):
         config_path = suite_root / SUITE_CONFIG_NAME
-        for usd_path in sorted(suite_root.rglob("*.usda")):
+        for usd_path in sorted(
+            path
+            for path in suite_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in USD_FILE_SUFFIXES
+        ):
             relative = usd_path.relative_to(suite_root)
             if any(
                 part.startswith("_") or part in IGNORED_DIRECTORY_NAMES

@@ -9,6 +9,7 @@ import tomllib
 
 SUITE_CONFIG_NAME = "goldeneye-suite.toml"
 PROJECT_CONFIG_NAME = "goldeneye.toml"
+USD_FILE_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 DEFAULT_FLIP_THRESHOLD = 0.04
 FrameValue = int | float
 DEFAULT_RENDER_COMMAND = (
@@ -21,13 +22,20 @@ DEFAULT_RENDER_COMMAND = (
     "--outputRoot",
     "{run_dir}",
 )
+DEFAULT_RENDERER_NAME = "typhoon"
+
+
+def default_renderers() -> dict[str, tuple[str, ...]]:
+    return {DEFAULT_RENDERER_NAME: DEFAULT_RENDER_COMMAND}
 
 
 @dataclass(frozen=True)
 class ProjectConfig:
     root: Path
     output_root: str = "_output"
+    renderer: str = DEFAULT_RENDERER_NAME
     render_command: tuple[str, ...] = DEFAULT_RENDER_COMMAND
+    renderers: dict[str, tuple[str, ...]] = field(default_factory=default_renderers)
     render_output_pattern: str = "{path}.exr"
 
 
@@ -37,7 +45,9 @@ class SuiteConfig:
     name: str
     project_root: Path = Path(".")
     render_output_pattern: str = "{path}.exr"
+    renderer: str = DEFAULT_RENDERER_NAME
     render_command: tuple[str, ...] = DEFAULT_RENDER_COMMAND
+    renderers: dict[str, tuple[str, ...]] = field(default_factory=default_renderers)
     artifact_dir: str = "comparison"
     reference_dir: str | None = None
     reference_pattern: str = "{path}.png"
@@ -57,6 +67,7 @@ class CaseConfig:
     expected_failure: bool = False
     flip_threshold: float | None = None
     render_output: str | None = None
+    renderer: str | None = None
     render_command: tuple[str, ...] | None = None
     reference: str | None = None
     frame_range: str | None = None
@@ -93,12 +104,17 @@ def load_project_config_for_path(path_text: str) -> ProjectConfig:
     goldeneye = _table(data, "goldeneye")
     render = _table(data, "render")
     _reject_legacy_render_args(render, config_path)
+    renderers = _renderer_map(data, default_renderers(), config_path)
+    renderer = _renderer_name(render.get("renderer", render.get("name")), DEFAULT_RENDERER_NAME, config_path)
+    render_command = _resolve_configured_render_command(
+        render, renderers, renderer, config_path
+    )
     return ProjectConfig(
         root=root,
         output_root=_string(goldeneye.get("output_root"), "_output"),
-        render_command=_command_list(
-            render.get("command"), DEFAULT_RENDER_COMMAND, config_path
-        ),
+        renderer=renderer,
+        render_command=render_command,
+        renderers=renderers,
         render_output_pattern=_string(render.get("output_pattern"), "{path}.exr"),
     )
 
@@ -114,7 +130,9 @@ def load_suite_config_for_path(path_text: str) -> SuiteConfig:
             root=path.parent,
             name=path.parent.name or "default",
             render_output_pattern=project.render_output_pattern,
+            renderer=project.renderer,
             render_command=project.render_command,
+            renderers=dict(project.renderers),
         )
 
     with config_path.open("rb") as file:
@@ -126,6 +144,11 @@ def load_suite_config_for_path(path_text: str) -> SuiteConfig:
     reference = _table(data, "reference")
     comparison = _table(data, "comparison")
     _reject_legacy_render_args(render, config_path)
+    renderers = _renderer_map(data, project.renderers, config_path)
+    renderer = _renderer_name(render.get("renderer", render.get("name")), project.renderer, config_path)
+    render_command = _resolve_configured_render_command(
+        render, renderers, renderer, config_path
+    )
 
     name = _string(suite.get("name"), root.name or "default")
     reference_dir = _optional_string(
@@ -142,9 +165,9 @@ def load_suite_config_for_path(path_text: str) -> SuiteConfig:
             render.get("output_pattern", suite.get("render_output_pattern")),
             project.render_output_pattern,
         ),
-        render_command=_command_list(
-            render.get("command"), project.render_command, config_path
-        ),
+        renderer=renderer,
+        render_command=render_command,
+        renderers=renderers,
         artifact_dir=_string(
             comparison.get("artifact_dir", suite.get("artifact_dir")),
             "comparison",
@@ -208,6 +231,7 @@ def load_case_config(path: Path) -> CaseConfig:
         render_output=_optional_string(
             render.get("output", data.get("render_output"))
         ),
+        renderer=_optional_renderer_name(render.get("renderer", render.get("name")), path),
         render_command=_optional_command_list(render.get("command"), path),
         reference=_optional_string(reference.get("path", data.get("reference"))),
         frame_range=_optional_string(frames.get("range", test.get("frames"))),
@@ -378,17 +402,74 @@ def _optional_command_list(value: Any, config_path: Path) -> tuple[str, ...] | N
     return _command_list(value, (), config_path)
 
 
+def _optional_renderer_name(value: Any, config_path: Path) -> str | None:
+    if value is None:
+        return None
+    return _renderer_name(value, "", config_path)
+
+
+def _renderer_name(value: Any, default: str, config_path: Path) -> str:
+    renderer = _string(value, default).strip()
+    if not renderer:
+        raise ValueError(f"{config_path}: renderer name must not be empty")
+    return renderer
+
+
+def _renderer_map(
+    data: dict[str, Any],
+    inherited: dict[str, tuple[str, ...]],
+    config_path: Path,
+) -> dict[str, tuple[str, ...]]:
+    renderers = dict(inherited)
+    table = _table(data, "renderers")
+    for name, value in table.items():
+        renderer_name = _renderer_name(str(name), "", config_path)
+        if not isinstance(value, dict):
+            raise TypeError(
+                f"{config_path}: [renderers.{renderer_name}] must be a table"
+            )
+        renderers[renderer_name] = _command_list(
+            value.get("command"),
+            (),
+            config_path,
+            label=f"[renderers.{renderer_name}].command",
+        )
+    return renderers
+
+
+def _resolve_configured_render_command(
+    render: dict[str, Any],
+    renderers: dict[str, tuple[str, ...]],
+    renderer: str,
+    config_path: Path,
+) -> tuple[str, ...]:
+    if "command" in render:
+        command = _command_list(render.get("command"), (), config_path)
+        renderers[renderer] = command
+        return command
+    try:
+        return renderers[renderer]
+    except KeyError as exc:
+        raise ValueError(
+            f"{config_path}: [render].renderer {renderer!r} does not match a configured renderer"
+        ) from exc
+
+
 def _command_list(
-    value: Any, default: tuple[str, ...], config_path: Path
+    value: Any,
+    default: tuple[str, ...],
+    config_path: Path,
+    *,
+    label: str = "[render].command",
 ) -> tuple[str, ...]:
     if value is None:
         return default
     try:
         command = tuple(_string_list(value))
     except TypeError as exc:
-        raise TypeError(f"{config_path}: [render].command must be a list of strings") from exc
+        raise TypeError(f"{config_path}: {label} must be a list of strings") from exc
     if not command:
-        raise ValueError(f"{config_path}: [render].command must not be empty")
+        raise ValueError(f"{config_path}: {label} must not be empty")
     return command
 
 
