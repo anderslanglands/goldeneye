@@ -1253,6 +1253,14 @@ def sortable_table_script() -> str:
           ? restoredState.sorts.map((item) => [item.key, item])
           : []
       );
+      if (typeof restoredState?.search === "string") {
+        const searchInput = document.querySelector("[data-report-search]");
+        if (searchInput) searchInput.value = restoredState.search;
+      }
+      if (typeof restoredState?.failuresOnly === "boolean") {
+        const failuresOnlyInput = document.querySelector("[data-failures-only]");
+        if (failuresOnlyInput) failuresOnlyInput.checked = restoredState.failuresOnly;
+      }
       const topNav = typeof document.querySelector === "function"
         ? document.querySelector(".top-nav")
         : null;

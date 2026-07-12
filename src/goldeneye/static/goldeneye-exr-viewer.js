@@ -712,6 +712,10 @@ export function captureReportUiState() {
   for (const section of document.querySelectorAll("details[data-section-id]")) {
     sections[section.dataset.sectionId || ""] = section.open === true;
   }
+  const searchInput = document.querySelector("[data-report-search]");
+  const failuresOnlyInput = document.querySelector("[data-failures-only]");
+  const search = searchInput?.value || "";
+  const failuresOnly = failuresOnlyInput?.checked === true;
   try {
     const storage = window.sessionStorage;
     storage.setItem(reportUiStateKey(), JSON.stringify({
@@ -719,6 +723,8 @@ export function captureReportUiState() {
       expanded,
       selected,
       sections,
+      search,
+      failuresOnly,
       scrollX: window.scrollX || 0,
       scrollY: window.scrollY || 0,
     }));

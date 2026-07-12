@@ -2933,25 +2933,52 @@ def test_nested_report_tables_sort_independently_with_detail_rows(tmp_path: Path
         let restoredScroll = null;
         let viewerInitializedAtScroll = false;
         const restoredDetail = { hidden: true };
+        const filteredDetail = { hidden: false };
         details.set("restored-detail", restoredDetail);
+        details.set("filtered-detail", filteredDetail);
         const restoredRow = {
-          dataset: { caseId: "expanded-case", detailRow: "restored-detail" },
+          dataset: {
+            caseId: "expanded-case",
+            detailRow: "restored-detail",
+            resultFailed: "true",
+            testName: "expanded-case",
+          },
           expanded: "false",
+          hidden: false,
+          textContent: "Expanded Case",
+          addEventListener() {},
+          getAttribute() { return this.expanded; },
+          setAttribute(_name, value) { this.expanded = value; },
+        };
+        const filteredRow = {
+          dataset: {
+            caseId: "filtered-case",
+            detailRow: "filtered-detail",
+            resultFailed: "true",
+            testName: "other-case",
+          },
+          expanded: "false",
+          hidden: false,
+          textContent: "Other Case",
           addEventListener() {},
           getAttribute() { return this.expanded; },
           setAttribute(_name, value) { this.expanded = value; },
         };
         const collapsedSection = {
           dataset: { sectionId: '["suite/with/slash"]' }, open: true,
+          querySelectorAll() { return []; },
         };
         const nestedSection = {
           dataset: { sectionId: '["suite","with","slash"]' }, open: false,
+          querySelectorAll() { return []; },
         };
         const restoredViewer = {
           dataset: {},
           querySelector() { return null; },
         };
         const topNav = { getBoundingClientRect: () => ({ bottom: 91 }) };
+        const search = { value: "", addEventListener() {} };
+        const failuresOnly = { checked: false, addEventListener() {} };
         const storage = {
           getItem() {
             return JSON.stringify({
@@ -2962,6 +2989,8 @@ def test_nested_report_tables_sort_independently_with_detail_rows(tmp_path: Path
                 '["suite/with/slash"]': false,
                 '["suite","with","slash"]': true,
               },
+              search: "expanded",
+              failuresOnly: true,
               scrollX: 0,
               scrollY: 321,
             });
@@ -2988,11 +3017,14 @@ def test_nested_report_tables_sort_independently_with_detail_rows(tmp_path: Path
             style: { setProperty(name, value) { rootStyle[name] = value; } },
           },
           querySelector(selector) {
-            return selector === ".top-nav" ? topNav : null;
+            if (selector === ".top-nav") return topNav;
+            if (selector === "[data-report-search]") return search;
+            if (selector === "[data-failures-only]") return failuresOnly;
+            return null;
           },
               querySelectorAll(selector) {
                 if (selector === "table[data-sortable-table]") return tables;
-                if (selector === "tr.result-row[data-detail-row]") return [restoredRow];
+                if (selector === "tr.result-row[data-detail-row]") return [restoredRow, filteredRow];
                 if (selector === "details[data-section-id]") {
                   return [collapsedSection, nestedSection];
                 }
@@ -3018,6 +3050,11 @@ def test_nested_report_tables_sort_independently_with_detail_rows(tmp_path: Path
               expanded: restoredRow.expanded,
               detailHidden: restoredDetail.hidden,
               sectionOpen: [collapsedSection.open, nestedSection.open],
+              searchValue: search.value,
+              failuresOnlyChecked: failuresOnly.checked,
+              restoredRowHidden: restoredRow.hidden,
+              filteredRowHidden: filteredRow.hidden,
+              filteredDetailHidden: filteredDetail.hidden,
             }));
         """,
         encoding="utf-8",
@@ -3042,6 +3079,11 @@ def test_nested_report_tables_sort_independently_with_detail_rows(tmp_path: Path
         "expanded": "true",
         "detailHidden": False,
         "sectionOpen": [False, True],
+        "searchValue": "expanded",
+        "failuresOnlyChecked": True,
+        "restoredRowHidden": False,
+        "filteredRowHidden": True,
+        "filteredDetailHidden": True,
     }
 
 
@@ -3522,6 +3564,8 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
         const sortButton = {
           dataset: { sortColumn: "2", sortDirection: "desc" },
         };
+        const search = { value: "threshold first", addEventListener() {} };
+        const failuresOnly = { checked: false, addEventListener() {} };
         const table = {
           dataset: { sortTableKey: "sample/surfaces" },
           querySelector: () => sortButton,
@@ -3557,7 +3601,11 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
         });
         globalThis.document = {
           baseURI: "https://example.test/run-0001/index.html",
-          querySelector() { return null; },
+          querySelector(selector) {
+            if (selector === "[data-report-search]") return search;
+            if (selector === "[data-failures-only]") return failuresOnly;
+            return null;
+          },
           querySelectorAll(selector) {
             if (selector === "[data-row-update-threshold]") return [thresholdRowButton];
             if (selector === "[data-row-update-reference]") return [referenceRowButton];
@@ -3574,9 +3622,11 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
         await import(pathToFileURL(process.argv[2]).href);
         thresholdRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
         await new Promise((resolve) => setTimeout(resolve, 0));
-        storageBlocked = true;
+        search.value = "mix vdf";
+        failuresOnly.checked = true;
         referenceRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
         await new Promise((resolve) => setTimeout(resolve, 0));
+        storageBlocked = true;
         suspectRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
         await new Promise((resolve) => setTimeout(resolve, 0));
         clearSuspectRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
@@ -3679,6 +3729,8 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
             "expanded": ["target-case"],
             "selected": ["selected-case"],
             "sections": {},
+            "search": "mix vdf",
+            "failuresOnly": True,
             "scrollX": 7,
             "scrollY": 413,
         },
@@ -5456,6 +5508,68 @@ def test_regenerate_html_rejects_malformed_summary_json(tmp_path: Path) -> None:
 
     with pytest.raises(report_html.ReportRegenerationError, match="invalid JSON"):
         report_html.regenerate_html(output_root=run_dir.parent, run="run-0001")
+
+
+def test_reference_update_preserves_nested_expected_failure_tables(
+    tmp_path: Path,
+) -> None:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        """[suite]
+name = "sample"
+
+[reference]
+dir = "reference"
+pattern = "{path}.exr"
+""",
+        encoding="utf-8",
+    )
+    usd_path = suite / "nodes" / "compositing" / "mix_vdf.usda"
+    usd_path.parent.mkdir(parents=True)
+    usd_path.write_text("#usda 1.0\n", encoding="utf-8")
+    config_path = usd_path.with_suffix(".goldeneye.toml")
+    config_path.write_text(
+        "[test.expected-failure]\n"
+        'typhoon-osl = "MaterialX does not provide an OSL implementation."\n',
+        encoding="utf-8",
+    )
+
+    default_reference = suite / "reference" / "nodes" / "compositing" / "mix_vdf.exr"
+    actual_path, config_text = view_server.build_case_reference_update(
+        usd_path, default_reference
+    )
+
+    assert actual_path == config_path
+    assert config_text == (
+        "[test.expected-failure]\n"
+        'typhoon-osl = "MaterialX does not provide an OSL implementation."\n'
+    )
+    assert tomllib.loads(config_text) == {
+        "test": {
+            "expected-failure": {
+                "typhoon-osl": "MaterialX does not provide an OSL implementation."
+            }
+        }
+    }
+
+    renderer_reference = (
+        suite / "reference" / "nodes" / "compositing" / "mix_vdf_typhoon.exr"
+    )
+    _, config_text = view_server.build_case_reference_update(
+        usd_path, renderer_reference
+    )
+
+    assert config_text == (
+        "[test.expected-failure]\n"
+        'typhoon-osl = "MaterialX does not provide an OSL implementation."\n'
+        "\n"
+        "[reference]\n"
+        'path = "reference/nodes/compositing/mix_vdf_typhoon.exr"\n'
+    )
+    assert tomllib.loads(config_text)["test"]["expected-failure"]["typhoon-osl"] == (
+        "MaterialX does not provide an OSL implementation."
+    )
 
 
 def test_reference_update_removes_override_when_exr_is_suite_default(

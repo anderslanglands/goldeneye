@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -767,20 +768,35 @@ def format_toml(data: dict[str, Any]) -> str:
     lines: list[str] = []
     scalar_items = [(key, value) for key, value in data.items() if not isinstance(value, dict)]
     for key, value in scalar_items:
-        lines.append(f"{key} = {format_toml_value(value)}")
+        lines.append(f"{format_toml_key(key)} = {format_toml_value(value)}")
     if scalar_items:
         lines.append("")
 
     for section, values in data.items():
-        if not isinstance(values, dict):
-            continue
-        lines.append(f"[{section}]")
-        for key, value in values.items():
-            if isinstance(value, dict):
-                raise ViewServerError("nested TOML tables are not supported for case config updates")
-            lines.append(f"{key} = {format_toml_value(value)}")
-        lines.append("")
+        if isinstance(values, dict):
+            format_toml_table(lines, [section], values)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def format_toml_table(lines: list[str], path: list[str], values: dict[str, Any]) -> None:
+    scalar_items = [
+        (key, value) for key, value in values.items() if not isinstance(value, dict)
+    ]
+    if scalar_items:
+        lines.append(f"[{'.'.join(format_toml_key(part) for part in path)}]")
+        for key, value in scalar_items:
+            lines.append(f"{format_toml_key(key)} = {format_toml_value(value)}")
+        lines.append("")
+
+    for key, value in values.items():
+        if isinstance(value, dict):
+            format_toml_table(lines, [*path, key], value)
+
+
+def format_toml_key(key: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        return key
+    return json.dumps(key)
 
 
 def format_toml_value(value: Any) -> str:
