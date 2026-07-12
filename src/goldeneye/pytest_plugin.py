@@ -1805,6 +1805,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
             '<button type="button" class="report-action-button" '
             'data-row-update-reference>Update reference</button>'
             '<button type="button" class="report-action-button" '
+            'data-row-set-expected-failure>Set expected failure</button>'
+            '<button type="button" class="report-action-button" '
             f'data-row-update-suspect data-suspect-target="{suspect_target}">'
             f'{esc(suspect_label)}</button>'
             '<span class="usdview-status" data-detail-action-status></span>'
@@ -2136,6 +2138,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
       <div class="selection-actions" data-selection-actions hidden>
         <button type="button" class="report-action-button" data-update-threshold>Update threshold</button>
         <button type="button" class="report-action-button" data-update-reference>Update reference</button>
+        <button type="button" class="report-action-button" data-set-expected-failure>Set expected failure</button>
         <span class="report-action-status" data-report-action-status></span>
       </div>
       <label for="run-comparison-select">Compare against</label>

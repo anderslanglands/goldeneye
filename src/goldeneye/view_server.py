@@ -21,6 +21,8 @@ USDVIEW_ENDPOINT = "/__goldeneye__/usdview"
 UPDATE_THRESHOLDS_ENDPOINT = "/__goldeneye__/thresholds"
 UPDATE_REFERENCES_ENDPOINT = "/__goldeneye__/references"
 UPDATE_SUSPECTS_ENDPOINT = "/__goldeneye__/suspects"
+UPDATE_EXPECTED_FAILURES_ENDPOINT = "/__goldeneye__/expected-failures"
+DEFAULT_EXPECTED_FAILURE_REASON = "Set from Goldeneye report viewer"
 USD_SUFFIXES = USD_FILE_SUFFIXES
 LDR_IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
 IMAGE_SUFFIXES = {".exr", *LDR_IMAGE_SUFFIXES}
@@ -81,6 +83,16 @@ class GoldeneyeViewHandler(SimpleHTTPRequestHandler):
 
             if endpoint == UPDATE_SUSPECTS_ENDPOINT:
                 result = update_suspects(
+                    payload,
+                    project_root=self.server.project_root,
+                    output_root=output_root,
+                    referer=self.headers.get("Referer", ""),
+                )
+                self._send_json(200, {"ok": True, **result})
+                return
+
+            if endpoint == UPDATE_EXPECTED_FAILURES_ENDPOINT:
+                result = update_expected_failures(
                     payload,
                     project_root=self.server.project_root,
                     output_root=output_root,
@@ -321,6 +333,78 @@ def update_suspects(
                 "suite": row.get("suite"),
                 "key": update["key"],
                 "suspect": update["suspect"],
+            }
+        )
+
+    _write_run_results(run_dir, results)
+    return {"updated": len(updated_rows), "rows": updated_rows}
+
+
+def update_expected_failures(
+    payload: dict[str, Any],
+    *,
+    project_root: Path,
+    output_root: Path,
+    referer: str = "",
+) -> dict[str, Any]:
+    run_dir = _resolve_run_dir(payload.get("run"), output_root=output_root, referer=referer)
+    results = _read_run_results(run_dir)
+    updates = []
+
+    for item in _payload_rows(payload):
+        suite = _payload_optional_text(item, "suite")
+        key = _payload_text(item, "key")
+        reason = _payload_expected_failure_reason(item)
+        row = _find_report_row(results, suite=suite, key=key)
+        status = str(row.get("status") or "")
+        if status == "expected-failure":
+            original_status = str(row.get("expected_failure_status") or "failed")
+        elif status.startswith("failed-"):
+            original_status = status
+        else:
+            raise ViewServerError(
+                "expected failure can only be set for failed report rows"
+            )
+        usd_path = _resolve_project_path(
+            _report_text(row, "usd"),
+            project_root=project_root,
+            suffixes=USD_SUFFIXES,
+            must_exist=True,
+        )
+        config_path, config_text = build_case_expected_failure_update(
+            usd_path,
+            reason,
+        )
+        if any(update["config_path"] == config_path for update in updates):
+            raise ViewServerError(
+                f"selected rows share expected-failure config: {config_path}"
+            )
+        updates.append(
+            {
+                "row": row,
+                "key": key,
+                "reason": reason,
+                "original_status": original_status,
+                "config_path": config_path,
+                "config_text": config_text,
+            }
+        )
+
+    updated_rows = []
+    for update in updates:
+        _write_text_atomic(update["config_path"], update["config_text"])
+        row = update["row"]
+        reason = update["reason"]
+        row["expected_failure"] = reason
+        row["expected_failure_reason"] = reason
+        row["expected_failure_status"] = update["original_status"]
+        row["status"] = "expected-failure"
+        updated_rows.append(
+            {
+                "suite": row.get("suite"),
+                "key": update["key"],
+                "reason": reason,
+                "status": row.get("status"),
             }
         )
 
@@ -691,6 +775,27 @@ def build_case_threshold_update(usd_path: Path, threshold: float) -> tuple[Path,
     return config_path, format_toml(data)
 
 
+def build_case_expected_failure_update(usd_path: Path, reason: str) -> tuple[Path, str]:
+    config_path = _case_config_path(usd_path)
+    data: dict[str, Any] = {}
+    if config_path.is_file():
+        with config_path.open("rb") as file:
+            loaded = tomllib.load(file)
+        if not isinstance(loaded, dict):
+            raise ViewServerError(f"invalid case config: {config_path}")
+        data = loaded
+
+    data.pop("expected-failure", None)
+    data.pop("expected_failure", None)
+    test = data.setdefault("test", {})
+    if not isinstance(test, dict):
+        raise ViewServerError(f"[test] must be a table in {config_path}")
+    test.pop("expected-failure", None)
+    test["expected_failure"] = reason
+
+    return config_path, format_toml(data)
+
+
 def build_case_suspect_update(usd_path: Path, suspect: bool) -> tuple[Path, str]:
     config_path = _case_config_path(usd_path)
     data: dict[str, Any] = {}
@@ -866,6 +971,17 @@ def _payload_optional_text(payload: dict[str, Any], key: str) -> str | None:
         raise ViewServerError(f"{key} must be a string")
     if "\x00" in value:
         raise ViewServerError(f"{key} is invalid")
+    return value
+
+
+def _payload_expected_failure_reason(payload: dict[str, Any]) -> str:
+    value = payload.get("reason", DEFAULT_EXPECTED_FAILURE_REASON)
+    if value in (None, ""):
+        return DEFAULT_EXPECTED_FAILURE_REASON
+    if not isinstance(value, str):
+        raise ViewServerError("reason must be a string")
+    if not value.strip():
+        raise ViewServerError("reason must not be empty")
     return value
 
 

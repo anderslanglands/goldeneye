@@ -2801,12 +2801,15 @@ def test_html_report_rows_expand_with_exr_canvas_viewer(tmp_path: Path) -> None:
     assert 'data-result-select' in html
     assert 'data-update-threshold' in html
     assert 'data-update-reference' in html
+    assert 'data-set-expected-failure' in html
     assert 'data-row-update-threshold' in html
     assert 'data-row-update-reference' in html
+    assert 'data-row-set-expected-failure' in html
     assert 'data-row-update-suspect' in html
     assert 'data-suspect-target="false"' in html
     assert 'Update threshold' in html
     assert 'Update reference' in html
+    assert 'Set expected failure' in html
     assert 'Clear suspect' in html
     assert 'canvas {' in html
 
@@ -2840,6 +2843,8 @@ def test_html_report_rows_expand_with_exr_canvas_viewer(tmp_path: Path) -> None:
     assert 'data-result-select' in viewer_js
     assert 'runReportAction("/__goldeneye__/thresholds"' in viewer_js
     assert 'runReportAction("/__goldeneye__/references"' in viewer_js
+    assert '"/__goldeneye__/expected-failures"' in viewer_js
+    assert 'data-row-set-expected-failure' in viewer_js
     assert '"/__goldeneye__/suspects"' in viewer_js
 
 
@@ -3123,6 +3128,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
         const actions = control();
         const thresholdButton = control();
         const referenceButton = control();
+        const expectedFailureButton = control();
         const rowsA = [control(), control()];
         const rowsB = [control(), control()];
         const tableA = table(rowsA, selectAllA);
@@ -3137,6 +3143,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
             if (selector === "[data-selection-actions]") return actions;
             if (selector === "[data-update-threshold]") return thresholdButton;
             if (selector === "[data-update-reference]") return referenceButton;
+            if (selector === "[data-set-expected-failure]") return expectedFailureButton;
             return null;
           },
           querySelectorAll(selector) {
@@ -3159,6 +3166,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
           selectAllB: [selectAllB.checked, selectAllB.indeterminate],
           thresholdLabel: thresholdButton.textContent,
           referenceLabel: referenceButton.textContent,
+          expectedFailureLabel: expectedFailureButton.textContent,
         };
 
         rowsB[0].checked = true;
@@ -3169,6 +3177,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
           selectAllB: [selectAllB.checked, selectAllB.indeterminate],
           thresholdLabel: thresholdButton.textContent,
           referenceLabel: referenceButton.textContent,
+          expectedFailureLabel: expectedFailureButton.textContent,
         };
 
         selectAllB.checked = true;
@@ -3180,6 +3189,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
           selectAllB: [selectAllB.checked, selectAllB.indeterminate],
           thresholdLabel: thresholdButton.textContent,
           referenceLabel: referenceButton.textContent,
+          expectedFailureLabel: expectedFailureButton.textContent,
         };
 
         console.log(JSON.stringify({
@@ -3206,6 +3216,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
             "selectAllB": [False, False],
             "thresholdLabel": "Update threshold (2)",
             "referenceLabel": "Update reference (2)",
+            "expectedFailureLabel": "Set expected failure (2)",
         },
         "afterPartialSecondSection": {
             "selected": [True, True, True, False],
@@ -3213,6 +3224,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
             "selectAllB": [False, True],
             "thresholdLabel": "Update threshold (3)",
             "referenceLabel": "Update reference (3)",
+            "expectedFailureLabel": "Set expected failure (3)",
         },
         "afterSecondSection": {
             "selected": [True, True, True, True],
@@ -3221,6 +3233,7 @@ def test_report_select_all_controls_rows_within_section_tables(tmp_path: Path) -
             "selectAllB": [True, False],
             "thresholdLabel": "Update threshold (4)",
             "referenceLabel": "Update reference (4)",
+            "expectedFailureLabel": "Set expected failure (4)",
         },
     }
 
@@ -3557,6 +3570,7 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
         }
         const thresholdRowButton = rowButton();
         const referenceRowButton = rowButton();
+        const expectedFailureRowButton = rowButton();
         const suspectRowButton = rowButton();
         suspectRowButton.dataset.suspectTarget = "true";
         const clearSuspectRowButton = rowButton();
@@ -3566,6 +3580,7 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
         };
         const search = { value: "threshold first", addEventListener() {} };
         const failuresOnly = { checked: false, addEventListener() {} };
+        const expectedFailureButton = control({});
         const table = {
           dataset: { sortTableKey: "sample/surfaces" },
           querySelector: () => sortButton,
@@ -3604,11 +3619,13 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
           querySelector(selector) {
             if (selector === "[data-report-search]") return search;
             if (selector === "[data-failures-only]") return failuresOnly;
+            if (selector === "[data-set-expected-failure]") return expectedFailureButton;
             return null;
           },
           querySelectorAll(selector) {
             if (selector === "[data-row-update-threshold]") return [thresholdRowButton];
             if (selector === "[data-row-update-reference]") return [referenceRowButton];
+            if (selector === "[data-row-set-expected-failure]") return [expectedFailureRowButton];
             if (selector === "[data-row-update-suspect]") return [suspectRowButton, clearSuspectRowButton];
             if (selector === "[data-result-select]") return [selectedControl, rowControl];
             if (selector === "[data-result-select]:checked") return [selectedControl];
@@ -3620,11 +3637,15 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
           addEventListener() {},
         };
         await import(pathToFileURL(process.argv[2]).href);
+        expectedFailureButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
+        await new Promise((resolve) => setTimeout(resolve, 0));
         thresholdRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
         await new Promise((resolve) => setTimeout(resolve, 0));
         search.value = "mix vdf";
         failuresOnly.checked = true;
         referenceRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expectedFailureRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
         await new Promise((resolve) => setTimeout(resolve, 0));
         storageBlocked = true;
         suspectRowButton.handlers.click({ preventDefault() {}, stopPropagation() {} });
@@ -3652,6 +3673,22 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
     assert json.loads(completed.stdout) == {
         "requests": [
             {
+                "endpoint": "/__goldeneye__/expected-failures",
+                "body": {
+                    "run": "/run-0001/",
+                    "rows": [
+                        {
+                            "suite": "sample",
+                            "key": "selected",
+                            "usd": "/selected.usda",
+                            "reference": "/selected.png",
+                            "render": "/selected.exr",
+                            "flipMean": "0.4",
+                        }
+                    ],
+                },
+            },
+            {
                 "endpoint": "/__goldeneye__/thresholds",
                 "body": {
                     "run": "/run-0001/",
@@ -3669,6 +3706,22 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
             },
             {
                 "endpoint": "/__goldeneye__/references",
+                "body": {
+                    "run": "/run-0001/",
+                    "rows": [
+                        {
+                            "suite": "sample",
+                            "key": "target",
+                            "usd": "/target.usda",
+                            "reference": "/target.png",
+                            "render": "/target.exr",
+                            "flipMean": "0.2",
+                        }
+                    ],
+                },
+            },
+            {
+                "endpoint": "/__goldeneye__/expected-failures",
                 "body": {
                     "run": "/run-0001/",
                     "rows": [
@@ -3735,7 +3788,7 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
             "scrollY": 413,
         },
         "status": "Updated 1 row; reloading...",
-        "reloadCount": 4,
+        "reloadCount": 6,
     }
 
 
@@ -4765,6 +4818,8 @@ def test_view_server_update_endpoints_mutate_source_files_on_disk(
 
     threshold_usd = suite_dir / "threshold-case.usdz"
     threshold_usd.write_bytes(b"PK\x03\x04")
+    expected_usd = suite_dir / "expected-case.usdz"
+    expected_usd.write_bytes(b"PK\x03\x04")
     reference = suite_dir / "reference" / "reference-case.exr"
     reference.parent.mkdir()
     reference.write_bytes(b"old-reference")
@@ -4796,6 +4851,14 @@ def test_view_server_update_endpoints_mutate_source_files_on_disk(
             "render_image": str(render),
             "render_output": str(render),
             "diff_exr": str(run_dir / "flip" / "reference-case.exr"),
+            "started_at": "2026-06-30T00:00:00+00:00",
+        },
+        {
+            "suite": "sample",
+            "key": "expected-case",
+            "status": "failed-render",
+            "render_output": str(run_dir / "expected-case.exr"),
+            "usd": str(expected_usd),
             "started_at": "2026-06-30T00:00:00+00:00",
         },
     ]
@@ -4891,6 +4954,37 @@ def test_view_server_update_endpoints_mutate_source_files_on_disk(
         assert "suspect = true" in threshold_config_text
 
         status, body = post(
+            view_server.UPDATE_EXPECTED_FAILURES_ENDPOINT,
+            {
+                "run": "/run-0001/",
+                "rows": [
+                    {
+                        "suite": "sample",
+                        "key": "expected-case",
+                        "reason": "Known endpoint failure",
+                    }
+                ],
+            },
+        )
+        assert status == 200
+        assert body == {
+            "ok": True,
+            "updated": 1,
+            "rows": [
+                {
+                    "suite": "sample",
+                    "key": "expected-case",
+                    "reason": "Known endpoint failure",
+                    "status": "expected-failure",
+                }
+            ],
+        }
+        expected_config = suite_dir / "expected-case.goldeneye.toml"
+        assert expected_config.read_text(encoding="utf-8") == (
+            "[test]\nexpected_failure = \"Known endpoint failure\"\n"
+        )
+
+        status, body = post(
             view_server.UPDATE_REFERENCES_ENDPOINT,
             {
                 "run": "/run-0001/",
@@ -4905,6 +4999,8 @@ def test_view_server_update_endpoints_mutate_source_files_on_disk(
         assert updated_report[0]["flip_threshold"] == 0.124
         assert updated_report[1]["reference"] == str(reference.resolve())
         assert updated_report[1]["status"] == "passed"
+        assert updated_report[2]["status"] == "expected-failure"
+        assert updated_report[2]["expected_failure_reason"] == "Known endpoint failure"
     finally:
         server.shutdown()
         server.server_close()
@@ -5045,6 +5141,223 @@ def test_view_server_update_thresholds_updates_case_config_and_report(tmp_path: 
     assert updated_report[2]["status"] == "failed-threshold"
     assert "Update threshold" in (run_dir / "index.html").read_text(encoding="utf-8")
 
+
+
+def test_view_server_update_expected_failures_updates_case_config_and_report(
+    tmp_path: Path,
+) -> None:
+    output_base = tmp_path / "_output"
+    run_dir = output_base / "run-0001"
+    run_dir.mkdir(parents=True)
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text(
+        "[suite]\nname = \"sample\"\n", encoding="utf-8"
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    other_usd = suite / "other.usda"
+    other_usd.write_text("#usda 1.0\n", encoding="utf-8")
+    default_usd = suite / "default.usda"
+    default_usd.write_text("#usda 1.0\n", encoding="utf-8")
+    case_config = suite / "case.goldeneye.toml"
+    initial_config = (
+        "[comparison]\nflip_threshold = 0.05\n\n"
+        "[test]\nsuspect = true\nexpected-failure = \"old reason\"\n"
+    )
+    case_config.write_text(initial_config, encoding="utf-8")
+    results = [
+        {
+            "suite": "sample",
+            "key": "case",
+            "status": "failed-threshold",
+            "usd": str(usd),
+            "render_output": str(run_dir / "case.exr"),
+            "started_at": "2026-06-30T00:00:00+00:00",
+            "flip_mean": 0.2,
+            "flip_threshold": 0.05,
+            "suspect": True,
+        },
+        {
+            "suite": "sample",
+            "key": "case-frame-2",
+            "status": "failed-render",
+            "usd": str(usd),
+            "render_output": str(run_dir / "case-frame-2.exr"),
+            "started_at": "2026-06-30T00:00:00+00:00",
+        },
+        {
+            "suite": "sample",
+            "key": "passed",
+            "status": "passed",
+            "usd": str(other_usd),
+            "render_output": str(run_dir / "passed.exr"),
+            "started_at": "2026-06-30T00:00:00+00:00",
+        },
+        {
+            "suite": "sample",
+            "key": "default",
+            "status": "failed-launch",
+            "usd": str(default_usd),
+            "render_output": str(run_dir / "default.exr"),
+            "started_at": "2026-06-30T00:00:00+00:00",
+        },
+    ]
+    (run_dir / "goldeneye-report.json").write_text(json.dumps(results) + "\n", encoding="utf-8")
+    (run_dir / "run-summary.json").write_text(
+        json.dumps(
+            {
+                "run_name": "run-0001",
+                "run_number": 1,
+                "started_at": "2026-06-30T00:00:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(view_server.ViewServerError, match="reason must not be empty"):
+        view_server.update_expected_failures(
+            {
+                "run": "/run-0001/",
+                "rows": [{"suite": "sample", "key": "case", "reason": "   "}],
+            },
+            project_root=tmp_path,
+            output_root=output_base,
+        )
+    assert case_config.read_text(encoding="utf-8") == initial_config
+
+    with pytest.raises(view_server.ViewServerError, match="failed report rows"):
+        view_server.update_expected_failures(
+            {"run": "/run-0001/", "rows": [{"suite": "sample", "key": "passed"}]},
+            project_root=tmp_path,
+            output_root=output_base,
+        )
+    assert not (suite / "other.goldeneye.toml").exists()
+
+    with pytest.raises(view_server.ViewServerError, match="share expected-failure config"):
+        view_server.update_expected_failures(
+            {
+                "run": "/run-0001/",
+                "rows": [
+                    {"suite": "sample", "key": "case"},
+                    {"suite": "sample", "key": "case-frame-2"},
+                ],
+            },
+            project_root=tmp_path,
+            output_root=output_base,
+        )
+    assert case_config.read_text(encoding="utf-8") == initial_config
+
+    default_result = view_server.update_expected_failures(
+        {"run": "/run-0001/", "rows": [{"suite": "sample", "key": "default"}]},
+        project_root=tmp_path,
+        output_root=output_base,
+    )
+
+    assert default_result == {
+        "updated": 1,
+        "rows": [
+            {
+                "suite": "sample",
+                "key": "default",
+                "reason": view_server.DEFAULT_EXPECTED_FAILURE_REASON,
+                "status": "expected-failure",
+            }
+        ],
+    }
+    default_config = suite / "default.goldeneye.toml"
+    assert default_config.read_text(encoding="utf-8") == (
+        "[test]\n"
+        f"expected_failure = {json.dumps(view_server.DEFAULT_EXPECTED_FAILURE_REASON)}\n"
+    )
+    assert plugin.build_case(default_usd).expected_failure == (
+        view_server.DEFAULT_EXPECTED_FAILURE_REASON
+    )
+    default_report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    assert default_report[3]["status"] == "expected-failure"
+    assert default_report[3]["expected_failure_status"] == "failed-launch"
+    assert default_report[3]["expected_failure_reason"] == (
+        view_server.DEFAULT_EXPECTED_FAILURE_REASON
+    )
+
+    result = view_server.update_expected_failures(
+        {
+            "run": "/run-0001/",
+            "rows": [
+                {
+                    "suite": "sample",
+                    "key": "case",
+                    "reason": "Known renderer mismatch",
+                }
+            ],
+        },
+        project_root=tmp_path,
+        output_root=output_base,
+    )
+
+    assert result == {
+        "updated": 1,
+        "rows": [
+            {
+                "suite": "sample",
+                "key": "case",
+                "reason": "Known renderer mismatch",
+                "status": "expected-failure",
+            }
+        ],
+    }
+    assert case_config.read_text(encoding="utf-8") == (
+        "[comparison]\nflip_threshold = 0.05\n\n"
+        "[test]\nsuspect = true\nexpected_failure = \"Known renderer mismatch\"\n"
+    )
+    case = plugin.build_case(usd)
+    assert case.expected_failure == "Known renderer mismatch"
+
+    update_result = view_server.update_expected_failures(
+        {
+            "run": "/run-0001/",
+            "rows": [
+                {
+                    "suite": "sample",
+                    "key": "case",
+                    "reason": "Updated renderer mismatch",
+                }
+            ],
+        },
+        project_root=tmp_path,
+        output_root=output_base,
+    )
+
+    assert update_result == {
+        "updated": 1,
+        "rows": [
+            {
+                "suite": "sample",
+                "key": "case",
+                "reason": "Updated renderer mismatch",
+                "status": "expected-failure",
+            }
+        ],
+    }
+    assert case_config.read_text(encoding="utf-8") == (
+        "[comparison]\nflip_threshold = 0.05\n\n"
+        "[test]\nsuspect = true\nexpected_failure = \"Updated renderer mismatch\"\n"
+    )
+    assert plugin.build_case(usd).expected_failure == "Updated renderer mismatch"
+    updated_report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
+    assert updated_report[0]["status"] == "expected-failure"
+    assert updated_report[0]["expected_failure"] == "Updated renderer mismatch"
+    assert updated_report[0]["expected_failure_reason"] == "Updated renderer mismatch"
+    assert updated_report[0]["expected_failure_status"] == "failed-threshold"
+    assert updated_report[1]["status"] == "failed-render"
+    assert updated_report[2]["status"] == "passed"
+    assert updated_report[3]["status"] == "expected-failure"
+    assert updated_report[3]["expected_failure_status"] == "failed-launch"
+    html = (run_dir / "index.html").read_text(encoding="utf-8")
+    assert "Set expected failure" in html
+    assert "expected-failure" in html
+    assert "2 expected failures" in html
 
 
 def test_view_server_update_suspects_updates_case_config_and_report(tmp_path: Path) -> None:

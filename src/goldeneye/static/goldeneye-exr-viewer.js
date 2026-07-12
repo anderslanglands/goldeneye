@@ -760,6 +760,8 @@ function updateSelectionControls() {
   if (thresholdButton) thresholdButton.textContent = `Update threshold (${selected.length})`;
   const referenceButton = document.querySelector("[data-update-reference]");
   if (referenceButton) referenceButton.textContent = `Update reference (${selected.length})`;
+  const expectedFailureButton = document.querySelector("[data-set-expected-failure]");
+  if (expectedFailureButton) expectedFailureButton.textContent = `Set expected failure (${selected.length})`;
   for (const selectAll of document.querySelectorAll("[data-select-all]")) {
     updateSelectAllControl(selectAll);
   }
@@ -921,6 +923,18 @@ function initializeSelectionControls() {
       runReportAction("/__goldeneye__/references", referenceButton, "Updating references");
     });
   }
+  const expectedFailureButton = document.querySelector("[data-set-expected-failure]");
+  if (expectedFailureButton) {
+    expectedFailureButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      runReportAction(
+        "/__goldeneye__/expected-failures",
+        expectedFailureButton,
+        "Setting expected failures",
+      );
+    });
+  }
   const initializeRowAction = (selector, endpoint, actionLabel, prepareRow = (row) => row) => {
     for (const button of document.querySelectorAll(selector)) {
       button.addEventListener("click", (event) => {
@@ -953,6 +967,11 @@ function initializeSelectionControls() {
     "[data-row-update-reference]",
     "/__goldeneye__/references",
     "Updating reference",
+  );
+  initializeRowAction(
+    "[data-row-set-expected-failure]",
+    "/__goldeneye__/expected-failures",
+    "Setting expected failure",
   );
   initializeRowAction(
     "[data-row-update-suspect]",
