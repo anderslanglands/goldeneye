@@ -56,6 +56,8 @@ def run_context(
     run_number: int = 1,
     renderer: str | None = None,
     provider: str | None = None,
+    project_name: str = "Goldeneye",
+    icon_path: Path | None = None,
 ) -> RunContext:
     output_base = tmp_path / "_output"
     run_dir = output_base / f"run-{run_number:04d}"
@@ -65,6 +67,8 @@ def run_context(
         run_number=run_number,
         started_at="2026-06-30T00:00:00+00:00",
         renderer=renderer if renderer is not None else provider,
+        project_name=project_name,
+        icon_path=icon_path,
     )
 
 
@@ -240,6 +244,58 @@ class ReportHtmlParser(HTMLParser):
 
 def parse_report(html: str) -> ReportHtmlParser:
     parser = ReportHtmlParser()
+    parser.feed(html)
+    return parser
+
+
+class RunsIndexParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.headers: list[str] = []
+        self.rows: list[list[str]] = []
+        self.sort_buttons: list[dict[str, str]] = []
+        self._row: list[str] | None = None
+        self._cell_text: str | None = None
+        self._header_text: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {key: value or "" for key, value in attrs}
+        if tag == "tr":
+            self._row = []
+        if tag == "th":
+            self._header_text = ""
+        if tag == "td" and self._row is not None:
+            self._cell_text = ""
+        if tag == "button" and "data-sort-column" in attr_map:
+            self.sort_buttons.append(
+                {
+                    "column": attr_map["data-sort-column"],
+                    "type": attr_map.get("data-sort-type", "text"),
+                    "direction": attr_map.get("data-sort-direction", ""),
+                }
+            )
+
+    def handle_data(self, data: str) -> None:
+        if self._header_text is not None:
+            self._header_text += data
+        if self._cell_text is not None:
+            self._cell_text += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "th" and self._header_text is not None:
+            self.headers.append(" ".join(self._header_text.split()))
+            self._header_text = None
+        if tag == "td" and self._cell_text is not None and self._row is not None:
+            self._row.append(" ".join(self._cell_text.split()))
+            self._cell_text = None
+        if tag == "tr":
+            if self._row is not None and self._row:
+                self.rows.append(self._row)
+            self._row = None
+
+
+def parse_runs_index(html: str) -> RunsIndexParser:
+    parser = RunsIndexParser()
     parser.feed(html)
     return parser
 
@@ -424,6 +480,244 @@ output_pattern = "project/{path}.exr"
     assert report[0]["render_output"] == str((run_dir / "sample" / "project" / "case.exr").resolve())
 
 
+
+def test_project_config_supplies_project_name_icon_and_run_index_metadata(
+    tmp_path: Path,
+) -> None:
+    icon = tmp_path / "brand.svg"
+    icon.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "goldeneye.toml").write_text(
+        '''
+[goldeneye]
+name = "USD Lux"
+icon = "brand.svg"
+
+[render]
+command = ["renderer", "{usd_path}"]
+''',
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    project = plugin.load_project_config_for_path(str(tmp_path))
+    assert project.name == "USD Lux"
+    assert project.icon_path == icon.resolve()
+    run_dir = tmp_path / "_output" / "run-0001"
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert summary["project_name"] == "USD Lux"
+    assert summary["project_icon"] == str(icon.resolve())
+    assert summary["suites"] == ["sample"]
+    assert summary["renderer"] == "typhoon"
+    assert summary["renderers"] == ["typhoon"]
+    assert (tmp_path / "_output" / "img" / "goldeneye-icon.svg").read_text(
+        encoding="utf-8"
+    ) == icon.read_text(encoding="utf-8")
+    run_html = (run_dir / "index.html").read_text(encoding="utf-8")
+    assert 'type="image/svg+xml" href="../img/goldeneye-icon.svg"' in run_html
+    assert 'url("../img/goldeneye-icon.svg")' in run_html
+    output_index = (tmp_path / "_output" / "index.html").read_text(encoding="utf-8")
+    assert "<title>USD Lux Runs</title>" in output_index
+    assert "<h1>USD Lux Runs</h1>" in output_index
+    assert "type=\"image/svg+xml\" href=\"img/goldeneye-icon.svg\"" in output_index
+    assert "Goldeneye Runs" not in output_index
+    index = parse_runs_index(output_index)
+    assert index.headers[:4] == ["Run", "Started", "Suites", "Renderer"]
+    assert index.sort_buttons[2] == {"column": "2", "type": "text", "direction": ""}
+    assert index.sort_buttons[3] == {"column": "3", "type": "text", "direction": ""}
+    assert index.rows[0][:4] == [
+        "run-0001",
+        summary["started_at"],
+        "sample",
+        "typhoon",
+    ]
+
+
+def test_project_config_accepts_favicon_alias_in_run_outputs(tmp_path: Path) -> None:
+    icon = tmp_path / "favicon.ico"
+    icon.write_bytes(b"ico")
+    (tmp_path / "goldeneye.toml").write_text(
+        """
+[goldeneye]
+name = "Icon Suite"
+favicon = "favicon.ico"
+
+[render]
+command = ["renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    project = plugin.load_project_config_for_path(str(tmp_path))
+    assert project.icon_path == icon.resolve()
+    run_dir = tmp_path / "_output" / "run-0001"
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert summary["project_name"] == "Icon Suite"
+    assert summary["project_icon"] == str(icon.resolve())
+    assert (tmp_path / "_output" / "img" / "goldeneye-icon.ico").read_bytes() == b"ico"
+    assert (tmp_path / "_output" / "favicon.ico").read_bytes() == b"ico"
+    run_html = (run_dir / "index.html").read_text(encoding="utf-8")
+    assert 'type="image/x-icon" href="../img/goldeneye-icon.ico"' in run_html
+    assert 'rel="alternate icon" type="image/x-icon" href="../favicon.ico"' in run_html
+    assert 'url("../img/goldeneye-icon.ico")' in run_html
+    output_index = (tmp_path / "_output" / "index.html").read_text(encoding="utf-8")
+    assert "<title>Icon Suite Runs</title>" in output_index
+    assert 'type="image/x-icon" href="img/goldeneye-icon.ico"' in output_index
+    assert 'rel="alternate icon" type="image/x-icon" href="favicon.ico"' in output_index
+
+
+def test_project_config_uses_png_icon_in_run_outputs(tmp_path: Path) -> None:
+    png_data = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x02\x08\x02\x00\x00\x00"
+    )
+    icon = tmp_path / "brand.png"
+    icon.write_bytes(png_data)
+    (tmp_path / "goldeneye.toml").write_text(
+        """
+[goldeneye]
+icon = "brand.png"
+
+[render]
+command = ["renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    output_base = tmp_path / "_output"
+    run_dir = output_base / "run-0001"
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert summary["project_icon"] == str(icon.resolve())
+    assert (output_base / "img" / "goldeneye-icon.png").read_bytes() == png_data
+    assert (output_base / "favicon.ico").read_bytes().endswith(png_data)
+    run_html = (run_dir / "index.html").read_text(encoding="utf-8")
+    assert 'type="image/png" href="../img/goldeneye-icon.png"' in run_html
+    assert 'rel="alternate icon" type="image/x-icon" href="../favicon.ico"' in run_html
+    assert 'url("../img/goldeneye-icon.png")' in run_html
+    output_index = (output_base / "index.html").read_text(encoding="utf-8")
+    assert 'type="image/png" href="img/goldeneye-icon.png"' in output_index
+    assert 'rel="alternate icon" type="image/x-icon" href="favicon.ico"' in output_index
+
+
+@pytest.mark.parametrize(
+    ("icon_value", "message"),
+    [('', "must not be empty"), ('missing.svg', "does not exist")],
+)
+def test_project_config_rejects_invalid_icon_paths(
+    tmp_path: Path,
+    icon_value: str,
+    message: str,
+) -> None:
+    (tmp_path / "goldeneye.toml").write_text(
+        f'[goldeneye]\nicon = "{icon_value}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        plugin.load_project_config_for_path(str(tmp_path))
+
+
+def test_project_config_rejects_unsupported_icon_suffix_during_run(tmp_path: Path) -> None:
+    icon = tmp_path / "brand.txt"
+    icon.write_text("not an icon\n", encoding="utf-8")
+    (tmp_path / "goldeneye.toml").write_text(
+        """
+[goldeneye]
+icon = "brand.txt"
+
+[render]
+command = ["renderer", "{usd_path}"]
+""",
+        encoding="utf-8",
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "goldeneye-suite.toml").write_text('[suite]\nname = "sample"\n', encoding="utf-8")
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "--goldeneye-dry-run",
+        "-s",
+        "-q",
+    )
+
+    assert completed.returncode != 0
+    assert "unsupported icon suffix: .txt" in completed.stderr
+
+
+def test_copy_report_favicon_builds_ico_fallback_for_png(tmp_path: Path) -> None:
+    png_data = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x02\x08\x02\x00\x00\x00"
+    )
+    icon = tmp_path / "brand.png"
+    icon.write_bytes(png_data)
+
+    copied = plugin.copy_report_favicon(tmp_path / "_output", icon)
+
+    assert sorted(path.name for path in copied) == ["favicon.ico", "goldeneye-icon.png"]
+    assert (tmp_path / "_output" / "img" / "goldeneye-icon.png").read_bytes() == png_data
+    ico = (tmp_path / "_output" / "favicon.ico").read_bytes()
+    assert ico[:8] == b"\x00\x00\x01\x00\x01\x00\x01\x02"
+    assert ico.endswith(png_data)
+
+
+def test_copy_report_favicon_rejects_unsupported_icon_suffix(tmp_path: Path) -> None:
+    icon = tmp_path / "brand.txt"
+    icon.write_text("not an icon\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported icon suffix: .txt"):
+        plugin.copy_report_favicon(tmp_path / "_output", icon)
+
+
 def test_project_config_selects_named_renderer(tmp_path: Path) -> None:
     (tmp_path / "goldeneye.toml").write_text(
         """
@@ -571,6 +865,93 @@ def test_missing_named_renderer_fails_command_resolution(tmp_path: Path) -> None
         plugin.build_render_command(case, options(tmp_path), tmp_path / "_output" / "run-0001")
 
 
+def expected_default_readme(project_name: str) -> str:
+    return f"""# {project_name}
+
+Goldeneye test suites for {project_name}. The checked-in fixtures and EXR references are managed by Goldeneye.
+
+## Prerequisites
+
+- [Pixi](https://pixi.sh/latest/installation/) must be installed before using the repository's build, test, and viewing commands. Pixi manages the dependencies, build and execution environment.
+- [GitHub CLI](https://cli.github.com/), logged in and authenticated for publishing updated reference archives to the repository.
+
+## Quick Start
+
+```bash
+git submodule update --init --recursive
+pixi run goldeneye download-references # download reference images
+pixi run goldeneye build               # build web server
+pixi run pytest                        # run test suites
+pixi run goldeneye view                # run web server to view results
+```
+
+## Running Tests
+
+Running tests using standard [`pytest`](https://docs.pytest.org/en/stable/).
+
+To run all tests:
+```bash
+pixi run pytest
+```
+
+To run a particular section, or particular test fixture:
+```bash
+pixi run pytest section/subsection
+pixi run pytest section/subsection/case.usda
+```
+
+To filter test runs by name use the `-k` flag:
+```bash
+# run all tests with "light" in the name
+pixi run pytest -k light
+# run all tests with "light" or "material" in the name
+pixi run pytest -k 'light or material'
+```
+
+## Reference Images
+
+### Getting reference images
+
+Populate all reference directories after cloning or pulling a manifest update:
+
+```bash
+pixi run goldeneye download-references
+```
+
+Reference images are stored as immutable ZIP archives in GitHub Releases, with one archive per suite subsection. The committed `reference-releases.json` manifest records every archive, file, size, and SHA-256 checksum. Hydrated `reference/` directories are intentionally ignored by Git.
+
+The command downloads only archives whose files are absent or outdated, verifies the archive and every extracted image, and records local hydration state. It refuses to overwrite locally edited references; use `--force` only when those edits should be discarded.
+
+### Updating reference images
+
+After adding or removing tests, adding or removing reference files, or using the report's **Update reference** action, publish the changed subsections:
+
+```bash
+pixi run goldeneye update-references
+```
+
+This command requires references hydrated from the current manifest. It creates an immutable GitHub release containing only changed subsection archives, updates `reference-releases.json`, and creates a Git commit containing the manifest and associated suite changes. Unrelated files outside suite directories are not included. Use `--dry-run --no-commit` to inspect the detected changes without publishing.
+
+## Adding Renderers
+
+By default, goldeneye is preconfigured with the OpenUSD Typhoon renderer. To add additional renderers, add a `[renderers.<name>]` block to `goldeneye.toml`. For example, to add Arnold:
+
+```toml
+[renderers.arnold]
+command = [
+    "kick", "{{usd_path}}",
+]
+```
+
+Configured renderers can then be run by name:
+```bash
+pixi run pytest test-suite --renderer arnold
+```
+
+See the [goldeneye documentation](https://github.com/anderslanglands/goldeneye) for more information including the full set of tokens that can be expanded in the renderer command.
+"""
+
+
 def test_cli_init_writes_default_named_renderer_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -581,14 +962,64 @@ def test_cli_init_writes_default_named_renderer_config(
     captured = capsys.readouterr()
     assert "wrote goldeneye.toml" in captured.out
     config_text = (tmp_path / "goldeneye.toml").read_text(encoding="utf-8")
-    assert '[render]\nrenderer = "typhoon"' in config_text
+    config = tomllib.loads(config_text)
+    assert config["goldeneye"]["name"] == tmp_path.name
+    assert config["render"]["renderer"] == "typhoon"
     assert "[renderers.typhoon]" in config_text
     project = plugin.load_project_config_for_path(str(tmp_path))
+    assert project.name == tmp_path.name
     assert project.renderer == "typhoon"
     assert project.renderers["typhoon"] == plugin.DEFAULT_RENDER_COMMAND
     assert project.render_output_pattern == "{path}.exr"
     assert "{suite_output_root}" in config_text
     assert "{suite}/{path}.exr" not in config_text
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "reference/\n"
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert readme == expected_default_readme(tmp_path.name)
+
+
+def test_cli_init_uses_config_parent_name_and_updates_gitignore(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "usdlux"
+    project_root.mkdir()
+    gitignore = project_root / ".gitignore"
+    gitignore.write_text("_output/", encoding="utf-8")
+
+    assert cli.main(["init", str(project_root / "goldeneye.toml")]) == 0
+
+    config_text = (project_root / "goldeneye.toml").read_text(encoding="utf-8")
+    assert tomllib.loads(config_text)["goldeneye"]["name"] == "usdlux"
+    assert plugin.load_project_config_for_path(str(project_root)).name == "usdlux"
+    assert gitignore.read_text(encoding="utf-8") == "_output/\nreference/\n"
+
+    assert cli.main(["init", str(project_root / "alt.toml")]) == 0
+    assert gitignore.read_text(encoding="utf-8") == "_output/\nreference/\n"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["reference", "reference/", "/reference/", "reference/**", "/reference/**"],
+)
+def test_cli_init_keeps_existing_reference_gitignore_patterns(
+    tmp_path: Path,
+    pattern: str,
+) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(f"{pattern}\n", encoding="utf-8")
+
+    cli.update_gitignore(tmp_path)
+
+    assert gitignore.read_text(encoding="utf-8") == f"{pattern}\n"
+
+
+def test_cli_init_does_not_overwrite_existing_readme(tmp_path: Path) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text("existing readme\n", encoding="utf-8")
+
+    assert cli.main(["init", str(tmp_path / "goldeneye.toml")]) == 0
+
+    assert readme.read_text(encoding="utf-8") == "existing readme\n"
 
 
 def test_cli_init_config_drives_suite_relative_nested_outputs(
@@ -667,9 +1098,11 @@ def test_default_output_roots_are_scoped_per_suite(tmp_path: Path) -> None:
     for suite_name in ("alpha", "beta"):
         suite = tmp_path / suite_name
         suite.mkdir()
-        (suite / "goldeneye-suite.toml").write_text(
-            f'[suite]\nname = "{suite_name}"\n', encoding="utf-8"
-        )
+        if suite_name == "beta":
+            suite_config = '\n[suite]\nname = "beta"\n\n[render]\nrenderer = "storm"\n\n[renderers.storm]\ncommand = ["storm-render", "{usd_path}", "{output_path}"]\n'
+        else:
+            suite_config = f'[suite]\nname = "{suite_name}"\n'
+        (suite / "goldeneye-suite.toml").write_text(suite_config, encoding="utf-8")
         usd = suite / "case.usda"
         usd.write_text("#usda 1.0\n", encoding="utf-8")
         suites.append(str(usd))
@@ -685,7 +1118,19 @@ def test_default_output_roots_are_scoped_per_suite(tmp_path: Path) -> None:
     assert rows["alpha"]["render_output"] == str((run_dir / "alpha" / "case.exr").resolve())
     assert rows["beta"]["render_output"] == str((run_dir / "beta" / "case.exr").resolve())
     assert rows["alpha"]["command"][-2:] == ["--outputRoot", str(run_dir / "alpha")]
-    assert rows["beta"]["command"][-2:] == ["--outputRoot", str(run_dir / "beta")]
+    assert rows["beta"]["command"] == [
+        "storm-render",
+        str((tmp_path / "beta" / "case.usda").resolve()),
+        str((run_dir / "beta" / "case.exr").resolve()),
+    ]
+    assert rows["alpha"]["renderer"] == "typhoon"
+    assert rows["beta"]["renderer"] == "storm"
+    summary = json.loads((run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert summary["suites"] == ["alpha", "beta"]
+    assert summary["renderers"] == ["storm", "typhoon"]
+    output_index = (tmp_path / "_output" / "index.html").read_text(encoding="utf-8")
+    index = parse_runs_index(output_index)
+    assert index.rows[0][2:4] == ["alpha, beta", "storm, typhoon"]
 
 
 def test_cli_init_refuses_to_overwrite_without_force(
@@ -2286,20 +2731,36 @@ def test_run_outputs_write_per_run_report_and_top_level_index(tmp_path: Path) ->
     context = run_context(tmp_path, run_number=7)
     context.run_dir.mkdir(parents=True)
     results = [
-        {"suite": "sample", "key": "a", "status": "failed-missing-threshold"},
+        {
+            "suite": "sample",
+            "key": "a",
+            "status": "failed-missing-threshold",
+            "renderer": "storm",
+        },
         {
             "suite": "sample",
             "key": "b",
             "status": "passed",
             "comparison": "flip",
+            "renderer": "typhoon",
             "render_output": str(context.run_dir / "b.exr"),
+        },
+        {
+            "suite": "extras",
+            "key": "c",
+            "status": "dry-run",
+            "renderer": "storm",
         },
     ]
 
     plugin.write_run_outputs(context, results)
 
     assert (context.run_dir / "goldeneye-report.json").is_file()
-    assert (context.run_dir / "run-summary.json").is_file()
+    summary = json.loads((context.run_dir / "run-summary.json").read_text(encoding="utf-8"))
+    assert summary["project_name"] == "Goldeneye"
+    assert summary["suites"] == ["extras", "sample"]
+    assert summary["renderer"] == "storm"
+    assert summary["renderers"] == ["storm", "typhoon"]
     assert (context.run_dir / "index.html").is_file()
     assert (context.run_dir / "assets" / "goldeneye-exr-viewer.js").read_bytes() == (
         plugin.REPORT_STATIC_DIR / "goldeneye-exr-viewer.js"
@@ -2319,6 +2780,16 @@ def test_run_outputs_write_per_run_report_and_top_level_index(tmp_path: Path) ->
     output_index = (context.output_base / "index.html").read_text(encoding="utf-8")
     assert "run-0007/index.html" in output_index
     assert "2026-06-30T00:00:00+00:00" in output_index
+    index = parse_runs_index(output_index)
+    assert index.headers[:4] == ["Run", "Started", "Suites", "Renderer"]
+    assert index.sort_buttons[2] == {"column": "2", "type": "text", "direction": ""}
+    assert index.sort_buttons[3] == {"column": "3", "type": "text", "direction": ""}
+    assert index.rows[0][:4] == [
+        "run-0007",
+        "2026-06-30T00:00:00+00:00",
+        "extras, sample",
+        "storm, typhoon",
+    ]
 
 
 def test_html_report_top_nav_adds_renderer_to_run_label(tmp_path: Path) -> None:
@@ -4333,6 +4804,14 @@ def test_regenerate_html_defaults_to_latest_run(tmp_path: Path) -> None:
     output_base = tmp_path / "_output"
     older = write_report_run(output_base, 1, key="older", status="dry-run")
     latest = write_report_run(output_base, 2, key="latest")
+    latest_report_path = latest / "goldeneye-report.json"
+    latest_report = json.loads(latest_report_path.read_text(encoding="utf-8"))
+    latest_report[0]["suite"] = "legacy-suite"
+    latest_report[0]["renderer"] = "storm"
+    latest_report_path.write_text(
+        json.dumps(latest_report, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     written = report_html.regenerate_html(output_root=output_base)
 
@@ -4355,11 +4834,16 @@ def test_regenerate_html_defaults_to_latest_run(tmp_path: Path) -> None:
     assert "latest" in (latest / "index.html").read_text(encoding="utf-8")
     output_index = (output_base / "index.html").read_text(encoding="utf-8")
     assert "--ty-base08: #b14956;" in output_index
-    assert output_index.count('<td data-sort-value="0.01">0.010</td>') == 3
+    assert output_index.count("<td data-sort-value=\"0.01\">0.010</td>") == 3
+    index = parse_runs_index(output_index)
+    rows = {row[0]: row for row in index.rows}
+    assert rows["run-0002"][2:4] == ["legacy-suite", "storm"]
     assert not (older / "index.html").exists()
     summary = json.loads((latest / "run-summary.json").read_text(encoding="utf-8"))
     assert summary["total"] == 1
     assert summary["compared"] == 1
+    assert summary["suites"] == ["legacy-suite"]
+    assert summary["renderers"] == ["storm"]
 
 
 def test_regenerate_html_backfills_legacy_usda_source_from_usd_path(

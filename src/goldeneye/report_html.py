@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from .config import USD_FILE_SUFFIXES
+from .config import USD_FILE_SUFFIXES, load_project_config_for_path
 from .pytest_plugin import (
     RUN_DIR_RE,
     RunContext,
@@ -49,10 +49,11 @@ def regenerate_html(
     for run_dir in run_dirs:
         written.extend(regenerate_run_html(run_dir))
 
+    project_config = load_project_config_for_path(str(output_base))
+    written.extend(copy_report_favicon(output_base, project_config.icon_path))
     output_index = output_base / "index.html"
     output_index.write_text(build_output_index(output_base), encoding="utf-8")
     written.append(output_index)
-    written.extend(copy_report_favicon(output_base))
     return written
 
 
@@ -188,12 +189,17 @@ def build_run_context(run_dir: Path, results: list[dict[str, Any]]) -> RunContex
     run_number = int(summary.get("run_number") or (match.group(1) if match else 0))
     started_at = str(summary.get("started_at") or first_started_at(results))
     renderer = summary.get("renderer", summary.get("provider")) or first_renderer(results)
+    project_config = load_project_config_for_path(str(run_dir.parent))
+    project_name = summary.get("project_name")
+    project_icon = summary.get("project_icon")
     return RunContext(
         output_base=run_dir.parent,
         run_dir=run_dir,
         run_number=run_number,
         started_at=started_at,
         renderer=renderer_label(renderer),
+        project_name=str(project_name) if isinstance(project_name, str) and project_name else project_config.name,
+        icon_path=Path(project_icon) if isinstance(project_icon, str) and project_icon else project_config.icon_path,
     )
 
 

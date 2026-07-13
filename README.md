@@ -90,6 +90,7 @@ Each fixture must be renderable by the configured renderer and must write an ima
 
 ```toml
 [goldeneye]
+name = "my-project"
 output_root = "_output"
 
 [render]
@@ -107,6 +108,15 @@ command = [
 ```
 
 `output_pattern` is Goldeneye's expected product path relative to the suite output root. With the config above, `nested/case.usda` in suite `test-suite` should author product name `nested/case.exr`; Goldeneye passes `{suite_output_root}` as `_output/run-NNNN/test-suite`, so the rendered file is expected at `_output/run-NNNN/test-suite/nested/case.exr`. Include `{suite}` in `output_pattern` only for a renderer that intentionally writes an extra suite-named subdirectory.
+
+`goldeneye init` sets `[goldeneye].name` from the directory that contains `goldeneye.toml`, and adds `reference/` to `.gitignore` so reference images are not committed by default. The project name is used on the runs index page. To use a custom icon/favicon for generated reports, add `icon` or `favicon` under `[goldeneye]` with a path relative to `goldeneye.toml`:
+
+```toml
+[goldeneye]
+name = "USD Lux"
+icon = "assets/report-icon.svg"
+```
+
 
 References are resolved by the suite config:
 
@@ -226,4 +236,11 @@ Use the local report viewer after a run:
 
 ```bash
 pixi run goldeneye view
+```
+
+By default the viewer binds to `127.0.0.1:8000`. Pass `--port` to use a different port, and `--bind` if you need to listen on another address:
+
+```bash
+pixi run goldeneye view --port 8080
+pixi run goldeneye view --bind 0.0.0.0 --port 8080
 ```

@@ -99,7 +99,17 @@ REPORT_FAVICON_SVG_SOURCE = REPORT_STATIC_DIR / "goldeneye-yellow.svg"
 REPORT_FAVICON_PNG_SOURCE = REPORT_STATIC_DIR / "goldeneye-yellow.png"
 REPORT_FAVICON_SVG_OUTPUT = Path("img") / "goldeneye-yellow.svg"
 REPORT_FAVICON_PNG_OUTPUT = Path("img") / "goldeneye-yellow.png"
+REPORT_CUSTOM_ICON_STEM = "goldeneye-icon"
 REPORT_FAVICON_FALLBACK = Path("favicon.ico")
+REPORT_ICON_TYPES = {
+    ".gif": "image/gif",
+    ".ico": "image/x-icon",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+}
 
 IGNORED_DIRS = {
     ".git",
@@ -122,6 +132,8 @@ class RunContext:
     run_number: int
     started_at: str
     renderer: str | None = None
+    project_name: str = "Goldeneye"
+    icon_path: Path | None = None
 
     @property
     def provider(self) -> str | None:
@@ -506,7 +518,12 @@ def get_run_context(config: pytest.Config) -> RunContext:
     renderer = project_config.renderer
     if config.getoption("--render-command") is not None:
         renderer = COMMAND_LINE_RENDERER_LABEL
-    context = allocate_run_context(output_base.resolve(), renderer=renderer)
+    context = allocate_run_context(
+        output_base.resolve(),
+        renderer=renderer,
+        project_name=project_config.name,
+        icon_path=project_config.icon_path,
+    )
     config._goldeneye_run_context = context  # type: ignore[attr-defined]
     return context
 
@@ -516,6 +533,8 @@ def allocate_run_context(
     started_at: str | None = None,
     renderer: str | None = None,
     provider: str | None = None,
+    project_name: str = "Goldeneye",
+    icon_path: Path | None = None,
 ) -> RunContext:
     output_base = output_base.resolve()
     output_base.mkdir(parents=True, exist_ok=True)
@@ -535,6 +554,8 @@ def allocate_run_context(
             run_number=run_number,
             started_at=started_at,
             renderer=renderer_label(renderer if renderer is not None else provider),
+            project_name=project_name,
+            icon_path=icon_path,
         )
 
 
@@ -985,8 +1006,27 @@ def copy_report_assets(run_dir: Path) -> list[Path]:
     return copied
 
 
-def copy_report_favicon(output_base: Path) -> list[Path]:
+def copy_report_favicon(output_base: Path, icon_path: Path | None = None) -> list[Path]:
     copied: list[Path] = []
+    if icon_path is not None:
+        source = icon_path.expanduser().resolve()
+        suffix = source.suffix.lower()
+        if suffix not in REPORT_ICON_TYPES:
+            raise ValueError(f"unsupported icon suffix: {source.suffix}")
+        icon_destination = output_base / custom_icon_output_path(source)
+        icon_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, icon_destination)
+        copied.append(icon_destination)
+        if suffix == ".png":
+            ico_destination = output_base / REPORT_FAVICON_FALLBACK
+            ico_destination.write_bytes(build_ico_from_png(source.read_bytes()))
+            copied.append(ico_destination)
+        elif suffix == ".ico":
+            ico_destination = output_base / REPORT_FAVICON_FALLBACK
+            shutil.copy2(source, ico_destination)
+            copied.append(ico_destination)
+        return copied
+
     if REPORT_FAVICON_SVG_SOURCE.is_file():
         svg_destination = output_base / REPORT_FAVICON_SVG_OUTPUT
         svg_destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1005,6 +1045,34 @@ def copy_report_favicon(output_base: Path) -> list[Path]:
         )
         copied.append(ico_destination)
     return copied
+
+
+def custom_icon_output_path(icon_path: Path) -> Path:
+    return Path("img") / f"{REPORT_CUSTOM_ICON_STEM}{icon_path.suffix.lower()}"
+
+
+def report_icon_href(prefix: str, icon_path: Path | None = None) -> str:
+    if icon_path is not None:
+        return prefix + custom_icon_output_path(icon_path).as_posix()
+    return prefix + REPORT_FAVICON_PNG_OUTPUT.as_posix()
+
+
+def report_icon_links(prefix: str, icon_path: Path | None = None) -> str:
+    if icon_path is not None:
+        suffix = icon_path.suffix.lower()
+        icon_type = REPORT_ICON_TYPES.get(suffix, "image/png")
+        links = [
+            f'<link rel="icon" type="{html.escape(icon_type, quote=True)}" href="{html.escape(report_icon_href(prefix, icon_path), quote=True)}">'
+        ]
+        if suffix in {".ico", ".png"}:
+            links.append(
+                f'<link rel="alternate icon" type="image/x-icon" href="{html.escape(prefix + REPORT_FAVICON_FALLBACK.as_posix(), quote=True)}">'
+            )
+        return "\n  ".join(links)
+    return (
+        f'<link rel="icon" type="image/png" href="{html.escape(prefix + REPORT_FAVICON_PNG_OUTPUT.as_posix(), quote=True)}">\n'
+        f'  <link rel="alternate icon" type="image/x-icon" href="{html.escape(prefix + REPORT_FAVICON_FALLBACK.as_posix(), quote=True)}">'
+    )
 
 
 def build_ico_from_png(png_data: bytes) -> bytes:
@@ -1055,7 +1123,7 @@ def write_run_outputs(context: RunContext, results: list[dict[str, Any]]) -> Non
         encoding="utf-8",
     )
     copy_report_assets(context.run_dir)
-    copy_report_favicon(context.output_base)
+    copy_report_favicon(context.output_base, context.icon_path)
     (context.output_base / "index.html").write_text(
         build_output_index(context.output_base),
         encoding="utf-8",
@@ -1070,11 +1138,20 @@ def summarize_results(context: RunContext, results: list[dict[str, Any]]) -> dic
     expected_failures = [row for row in results if is_expected_failure_result(row)]
     dry_runs = [row for row in results if row.get("status") == "dry-run"]
     suspect = [row for row in results if row.get("suspect") is True]
+    summary_renderer = renderer_label(first_result_renderer(results) or context.renderer)
+    renderers = sorted_unique_text(
+        renderer_label(row.get("renderer", row.get("provider")))
+        for row in results
+        if row.get("renderer", row.get("provider"))
+    ) or ([summary_renderer] if summary_renderer else [])
     summary = {
         "run_name": context.run_dir.name,
         "run_number": context.run_number,
         "started_at": context.started_at,
-        "renderer": renderer_label(first_result_renderer(results) or context.renderer),
+        "project_name": context.project_name,
+        "renderer": summary_renderer,
+        "renderers": renderers,
+        "suites": sorted_unique_text(row.get("suite") or "default" for row in results),
         "run_dir": str(context.run_dir),
         "total": len(results),
         "compared": len(compared),
@@ -1087,6 +1164,8 @@ def summarize_results(context: RunContext, results: list[dict[str, Any]]) -> dic
         "flip_min": None,
         "flip_max": None,
     }
+    if context.icon_path is not None:
+        summary["project_icon"] = str(context.icon_path)
     if flip_values:
         summary.update(
             {
@@ -1096,6 +1175,24 @@ def summarize_results(context: RunContext, results: list[dict[str, Any]]) -> dic
             }
         )
     return summary
+
+
+def sorted_unique_text(values: Any) -> list[str]:
+    result = sorted({str(value) for value in values if str(value)})
+    return result
+
+
+def summary_text_list(summary: dict[str, Any], key: str) -> list[str]:
+    value = summary.get(key)
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def format_summary_list(values: list[str]) -> str:
+    return ", ".join(values)
 
 
 def numeric_flip_values(rows: list[dict[str, Any]]) -> list[float]:
@@ -2008,8 +2105,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/png" href="../img/goldeneye-yellow.png">
-  <link rel="alternate icon" type="image/x-icon" href="../favicon.ico">
+  {report_icon_links("../", context.icon_path)}
   <title>Goldeneye {esc(summary['run_name'])}</title>
   <style>
 {report_palette_css()}    :root {{ --report-sticky-top: 74px; }}
@@ -2027,7 +2123,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     a:hover {{ text-decoration: underline; }}
     .top-nav {{ position: sticky; z-index: 2000; top: 10px; display: flex; align-items: center; gap: 16px; min-height: 48px; margin: 10px 24px 0; padding: 8px 12px; background: rgba(24, 24, 24, 0.94); border: 1px solid #333; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); backdrop-filter: blur(10px); box-sizing: border-box; }}
     .top-nav-brand {{ display: inline-flex; align-items: center; gap: 10px; min-width: 0; }}
-    .top-nav-logo {{ width: 28px; height: 28px; flex: 0 0 auto; background: center / contain no-repeat url("../img/goldeneye-yellow.png"); }}
+    .top-nav-logo {{ width: 28px; height: 28px; flex: 0 0 auto; background: center / contain no-repeat url("{esc(report_icon_href("../", context.icon_path))}"); }}
     .top-nav-run {{ color: #fff; font-weight: 700; white-space: nowrap; }}
     .top-nav-stats {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; color: #bbb; }}
     .top-nav-stat {{ white-space: nowrap; }}
@@ -2166,9 +2262,14 @@ def build_output_index(output_base: Path) -> str:
     def esc(value: object) -> str:
         return html.escape(str(value), quote=True)
 
+    project_name = output_index_project_name(output_base, summaries)
+    icon_path = output_index_icon_path(output_base, summaries)
     rows = []
     for summary in sorted(summaries, key=lambda item: int(item["run_number"]), reverse=True):
         run_name = str(summary["run_name"])
+        suites_text = format_summary_list(summary_text_list(summary, "suites"))
+        renderers = summary_text_list(summary, "renderers") or summary_text_list(summary, "renderer")
+        renderers_text = format_summary_list(renderers)
         rows.append(
             "<tr>"
             + "".join(
@@ -2181,6 +2282,8 @@ def build_output_index(output_base: Path) -> str:
                         esc(summary.get("started_at", "")),
                         sort_value=summary.get("started_at", ""),
                     ),
+                    sortable_cell(esc(suites_text), sort_value=suites_text),
+                    sortable_cell(esc(renderers_text), sort_value=renderers_text),
                     sortable_cell(
                         str(int(summary.get("total", 0))),
                         sort_value=int(summary.get("total", 0)),
@@ -2217,15 +2320,17 @@ def build_output_index(output_base: Path) -> str:
         [
             sortable_header("Run", 0),
             sortable_header("Started", 1),
-            sortable_header("Total", 2, "number"),
-            sortable_header("Compared", 3, "number"),
-            sortable_header("Mean FLIP", 4, "number"),
-            sortable_header("Min FLIP", 5, "number"),
-            sortable_header("Max FLIP", 6, "number"),
-            sortable_header("Missing References", 7, "number"),
-            sortable_header("Failed", 8, "number"),
-            sortable_header("Expected Failures", 9, "number"),
-            sortable_header("Dry-run", 10, "number"),
+            sortable_header("Suites", 2),
+            sortable_header("Renderer", 3),
+            sortable_header("Total", 4, "number"),
+            sortable_header("Compared", 5, "number"),
+            sortable_header("Mean FLIP", 6, "number"),
+            sortable_header("Min FLIP", 7, "number"),
+            sortable_header("Max FLIP", 8, "number"),
+            sortable_header("Missing References", 9, "number"),
+            sortable_header("Failed", 10, "number"),
+            sortable_header("Expected Failures", 11, "number"),
+            sortable_header("Dry-run", 12, "number"),
         ]
     )
 
@@ -2234,9 +2339,8 @@ def build_output_index(output_base: Path) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/png" href="img/goldeneye-yellow.png">
-  <link rel="alternate icon" type="image/x-icon" href="favicon.ico">
-  <title>Goldeneye Runs</title>
+  {report_icon_links("", icon_path)}
+  <title>{esc(project_name)} Runs</title>
   <style>
 {report_palette_css()}    :root {{ --report-sticky-top: 74px; }}
     body {{ margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #111; color: #eee; }}
@@ -2255,7 +2359,7 @@ def build_output_index(output_base: Path) -> str:
 </head>
 <body>
   <main>
-    <h1>Goldeneye Runs</h1>
+    <h1>{esc(project_name)} Runs</h1>
     <table data-sortable-table>
       <thead><tr>{headers}</tr></thead>
       <tbody>{"".join(rows)}</tbody>
@@ -2265,6 +2369,51 @@ def build_output_index(output_base: Path) -> str:
 </body>
 </html>
 """
+
+
+def output_index_project_name(output_base: Path, summaries: list[dict[str, Any]]) -> str:
+    for summary in sorted(summaries, key=lambda item: int(item["run_number"]), reverse=True):
+        name = summary.get("project_name")
+        if isinstance(name, str) and name.strip():
+            return name
+    return load_project_config_for_path(str(output_base)).name
+
+
+def output_index_icon_path(output_base: Path, summaries: list[dict[str, Any]]) -> Path | None:
+    for summary in sorted(summaries, key=lambda item: int(item["run_number"]), reverse=True):
+        icon = summary.get("project_icon")
+        if isinstance(icon, str) and icon:
+            return Path(icon)
+    copied = sorted((output_base / "img").glob(f"{REPORT_CUSTOM_ICON_STEM}.*"))
+    return copied[0] if copied else None
+
+
+def read_report_rows_for_summary(run_dir: Path) -> list[dict[str, Any]]:
+    report_path = run_dir / "goldeneye-report.json"
+    if not report_path.is_file():
+        return []
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        return []
+    return data
+
+
+def populate_summary_run_metadata(summary: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    if "suites" not in summary:
+        summary["suites"] = sorted_unique_text(row.get("suite") or "default" for row in rows)
+    if "renderers" not in summary:
+        renderers = sorted_unique_text(
+            renderer_label(row.get("renderer", row.get("provider")))
+            for row in rows
+            if row.get("renderer", row.get("provider"))
+        )
+        if not renderers:
+            renderer = summary.get("renderer", summary.get("provider"))
+            renderers = [renderer_label(renderer)] if renderer else []
+        summary["renderers"] = renderers
 
 
 def read_run_summaries(output_base: Path) -> list[dict[str, Any]]:
@@ -2295,6 +2444,8 @@ def read_run_summaries(output_base: Path) -> list[dict[str, Any]]:
                 "expected_failures": 0,
                 "dry_run": 0,
             }
+        rows = read_report_rows_for_summary(run_dir)
+        populate_summary_run_metadata(summary, rows)
         summary.setdefault("run_name", run_dir.name)
         summary.setdefault("run_number", int(match.group(1)))
         summaries.append(summary)

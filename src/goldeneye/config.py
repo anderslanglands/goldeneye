@@ -32,7 +32,9 @@ def default_renderers() -> dict[str, tuple[str, ...]]:
 @dataclass(frozen=True)
 class ProjectConfig:
     root: Path
+    name: str = "Goldeneye"
     output_root: str = "_output"
+    icon_path: Path | None = None
     renderer: str = DEFAULT_RENDERER_NAME
     render_command: tuple[str, ...] = DEFAULT_RENDER_COMMAND
     renderers: dict[str, tuple[str, ...]] = field(default_factory=default_renderers)
@@ -112,7 +114,13 @@ def load_project_config_for_path(path_text: str) -> ProjectConfig:
     )
     return ProjectConfig(
         root=root,
+        name=_project_name(goldeneye.get("name"), root),
         output_root=_string(goldeneye.get("output_root"), "_output"),
+        icon_path=_optional_project_path(
+            goldeneye.get("icon", goldeneye.get("favicon")),
+            root,
+            config_path,
+        ),
         renderer=renderer,
         render_command=render_command,
         renderers=renderers,
@@ -347,6 +355,32 @@ def _optional_string(value: Any) -> str | None:
     if not isinstance(value, str):
         raise TypeError(f"expected string, got {type(value).__name__}")
     return value
+
+
+def _default_project_name(root: Path) -> str:
+    return root.name or "Goldeneye"
+
+
+def _project_name(value: Any, root: Path) -> str:
+    name = _string(value, _default_project_name(root)).strip()
+    if not name:
+        raise ValueError(f"{root / PROJECT_CONFIG_NAME}: [goldeneye].name must not be empty")
+    return name
+
+
+def _optional_project_path(value: Any, root: Path, config_path: Path) -> Path | None:
+    text = _optional_string(value)
+    if text is None:
+        return None
+    if not text.strip():
+        raise ValueError(f"{config_path}: [goldeneye].icon must not be empty")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+    if not path.is_file():
+        raise ValueError(f"{config_path}: [goldeneye].icon does not exist: {path}")
+    return path
 
 
 def _optional_float(value: Any) -> float | None:
