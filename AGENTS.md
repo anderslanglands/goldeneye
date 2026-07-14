@@ -41,4 +41,4 @@ Do not commit generated run output, conda build output, Pixi environments, pytes
 
 ## References
 
-Reference images can be published with `pixi run goldeneye update-references` and restored with `pixi run goldeneye download-references`. Publishing requires an authenticated GitHub CLI and a repository remote that can host GitHub Releases.
+Reference images can be published with `pixi run goldeneye update-references` and restored with `pixi run goldeneye download-references`. Both operations require an authenticated GitHub CLI and a repository remote that can host GitHub Releases.

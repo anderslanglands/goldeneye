@@ -13,9 +13,6 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any, Iterable
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import Request, urlopen
 import zipfile
 
 from .config import SUITE_CONFIG_NAME, USD_FILE_SUFFIXES, load_suite_config_for_path
@@ -220,20 +217,37 @@ def build_archive(
     }
 
 
-def release_asset_url(repository: str, release: str, archive: str) -> str:
-    return (
-        f"https://github.com/{repository}/releases/download/"
-        f"{quote(release, safe='')}/{quote(archive, safe='')}"
-    )
-
-
-def _download(url: str, destination: Path) -> None:
-    request = Request(url, headers={"User-Agent": "goldeneye-reference-sync/1"})
+def _download(
+    project_root: Path,
+    repository: str,
+    release: str,
+    archive: str,
+    destination: Path,
+) -> None:
+    if shutil.which("gh") is None:
+        raise ReferenceArchiveError(
+            "GitHub CLI (`gh`) is required to download references"
+        )
     try:
-        with urlopen(request, timeout=120) as response, destination.open("wb") as output:
-            shutil.copyfileobj(response, output)
-    except (HTTPError, URLError) as exc:
-        raise ReferenceArchiveError(f"failed to download {url}: {exc}") from exc
+        _run(
+            [
+                "gh",
+                "release",
+                "download",
+                release,
+                "--repo",
+                repository,
+                "--pattern",
+                archive,
+                "--output",
+                str(destination),
+            ],
+            project_root,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ReferenceArchiveError(
+            f"failed to download {archive} from GitHub release {release}"
+        ) from exc
 
 
 def _state_files(state: dict[str, Any] | None) -> dict[str, str]:
@@ -396,9 +410,14 @@ def hydrate_references(project_root: Path, *, force: bool = False) -> int:
             ):
                 continue
             archive_path = temporary / group["archive"]
-            url = release_asset_url(manifest["repository"], group["release"], group["archive"])
             print(f"Downloading {group_id} ({group['archive_size']} bytes)")
-            _download(url, archive_path)
+            _download(
+                project_root,
+                manifest["repository"],
+                group["release"],
+                group["archive"],
+                archive_path,
+            )
             if sha256_file(archive_path) != group["archive_sha256"]:
                 raise ReferenceArchiveError(f"archive checksum mismatch: {group_id}")
             with zipfile.ZipFile(archive_path) as archive:

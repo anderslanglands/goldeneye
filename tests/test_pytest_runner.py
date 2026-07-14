@@ -873,7 +873,7 @@ Goldeneye test suites for {project_name}. The checked-in fixtures and EXR refere
 ## Prerequisites
 
 - [Pixi](https://pixi.sh/latest/installation/) must be installed before using the repository's build, test, and viewing commands. Pixi manages the dependencies, build and execution environment.
-- [GitHub CLI](https://cli.github.com/), logged in and authenticated for publishing updated reference archives to the repository.
+- [GitHub CLI](https://cli.github.com/), logged in and authenticated for downloading or publishing reference archives in the repository.
 
 ## Quick Start
 

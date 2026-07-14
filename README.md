@@ -7,7 +7,7 @@ Renderer support is pluggable: a suite can use the default `typhoon` renderer, d
 ## Prerequisites
 
 - [Pixi](https://pixi.sh/latest/installation/) to create the suite environment and run Goldeneye.
-- [GitHub CLI (`gh`)](https://cli.github.com/manual/installation) only if you want Goldeneye to publish reference archives to GitHub Releases. It must be authenticated for the target repository.
+- [GitHub CLI (`gh`)](https://cli.github.com/manual/installation) authenticated for the target repository, to download or publish reference archives in GitHub Releases.
 - A renderer command. The Goldeneye conda package depends on `openusd-typhoon`, so the default `typhoon` renderer can run `usdrender` without extra setup.
 
 ## Quick Start

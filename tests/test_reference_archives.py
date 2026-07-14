@@ -157,7 +157,9 @@ def test_hydrate_downloads_verifies_and_restores_references(
     monkeypatch.setattr(
         archives,
         "_download",
-        lambda _url, destination: shutil.copyfile(release_archive, destination),
+        lambda _root, _repository, _release, _archive, destination: shutil.copyfile(
+            release_archive, destination
+        ),
     )
 
     assert archives.hydrate_references(tmp_path) == 1
@@ -188,7 +190,9 @@ def test_hydrate_rejects_modified_local_reference_without_force(
     monkeypatch.setattr(
         archives,
         "_download",
-        lambda _url, destination: shutil.copyfile(release_archive, destination),
+        lambda _root, _repository, _release, _archive, destination: shutil.copyfile(
+            release_archive, destination
+        ),
     )
 
     with pytest.raises(archives.ReferenceArchiveError, match="local references differ"):
@@ -215,7 +219,9 @@ def test_hydrate_rejects_archive_content_not_declared_by_manifest(
     monkeypatch.setattr(
         archives,
         "_download",
-        lambda _url, destination: shutil.copyfile(bad_archive, destination),
+        lambda _root, _repository, _release, _archive, destination: shutil.copyfile(
+            bad_archive, destination
+        ),
     )
 
     with pytest.raises(archives.ReferenceArchiveError, match="contents do not match"):
@@ -236,7 +242,13 @@ def test_hydrate_rejects_archive_name_that_escapes_download_directory(
     reference.unlink()
     downloaded = False
 
-    def fake_download(_url: str, _destination: Path) -> None:
+    def fake_download(
+        _root: Path,
+        _repository: str,
+        _release: str,
+        _archive: str,
+        _destination: Path,
+    ) -> None:
         nonlocal downloaded
         downloaded = True
 
@@ -283,7 +295,9 @@ def test_hydrate_rolls_back_installed_files_when_state_write_fails(
     monkeypatch.setattr(
         archives,
         "_download",
-        lambda _url, destination: shutil.copyfile(release_archive, destination),
+        lambda _root, _repository, _release, _archive, destination: shutil.copyfile(
+            release_archive, destination
+        ),
     )
     real_write = archives.write_json_atomic
 
@@ -297,6 +311,60 @@ def test_hydrate_rolls_back_installed_files_when_state_write_fails(
     with pytest.raises(OSError, match="disk full"):
         archives.hydrate_references(tmp_path)
     assert reference.read_bytes() == b"old reference"
+
+
+def test_download_uses_authenticated_github_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "references.zip"
+    calls: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(archives.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        archives,
+        "_run",
+        lambda command, root: calls.append((command, root)),
+    )
+
+    archives._download(
+        tmp_path,
+        "owner/private-repository",
+        "reference-data-test",
+        "sample--abc123.zip",
+        destination,
+    )
+
+    assert calls == [
+        (
+            [
+                "gh",
+                "release",
+                "download",
+                "reference-data-test",
+                "--repo",
+                "owner/private-repository",
+                "--pattern",
+                "sample--abc123.zip",
+                "--output",
+                str(destination),
+            ],
+            tmp_path,
+        )
+    ]
+
+
+def test_download_requires_github_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(archives.shutil, "which", lambda _name: None)
+
+    with pytest.raises(archives.ReferenceArchiveError, match="required to download"):
+        archives._download(
+            tmp_path,
+            "owner/repository",
+            "reference-data-test",
+            "sample--abc123.zip",
+            tmp_path / "references.zip",
+        )
 
 
 def test_update_publishes_only_changed_groups_and_removes_deleted_groups(
