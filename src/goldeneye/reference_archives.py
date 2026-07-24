@@ -70,7 +70,10 @@ def load_manifest(project_root: Path) -> dict[str, Any] | None:
     path = project_root / MANIFEST_NAME
     if not path.is_file():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReferenceArchiveError(f"invalid reference manifest: {path}") from exc
     if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
         raise ReferenceArchiveError(f"unsupported reference manifest: {path}")
     if not isinstance(data.get("repository"), str) or not isinstance(data.get("groups"), dict):
@@ -640,15 +643,81 @@ def _release_name(group_records: dict[str, dict[str, Any]]) -> str:
     return f"reference-data-{timestamp}-{digest}-{secrets.token_hex(4)}"
 
 
+def _manifest_has_local_changes(project_root: Path) -> bool:
+    completed = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+            "--",
+            MANIFEST_NAME,
+        ],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+
+def _git_manifest_digest(project_root: Path, revision: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "show", f"{revision}:./{MANIFEST_NAME}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        manifest = json.loads(completed.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    return manifest_digest(manifest)
+
+
+def _raise_local_manifest_error(project_root: Path) -> None:
+    state = load_state(project_root)
+    state_digest = state.get("manifest_sha256") if state is not None else None
+    index_digest = _git_manifest_digest(project_root, "")
+    head_digest = _git_manifest_digest(project_root, "HEAD")
+    if state_digest is not None and state_digest == index_digest:
+        restore_command = f"git restore --worktree -- {MANIFEST_NAME}"
+    elif state_digest is not None and state_digest == head_digest:
+        restore_command = (
+            "git restore --source=HEAD --staged --worktree -- "
+            f"{MANIFEST_NAME}"
+        )
+    else:
+        raise ReferenceArchiveError(
+            f"{MANIFEST_NAME} has local changes, but neither its committed nor "
+            "staged version matches the hydration state; restore the manifest "
+            "version used to hydrate references before retrying"
+        )
+    raise ReferenceArchiveError(
+        f"{MANIFEST_NAME} has local changes and cannot be used as the hydration "
+        f"baseline; restore it with `{restore_command}`, then run "
+        "`pixi run goldeneye update-references`"
+    )
+
+
 def _check_hydration_state(project_root: Path, manifest: dict[str, Any] | None) -> None:
     if manifest is None:
+        if _manifest_has_local_changes(project_root):
+            _raise_local_manifest_error(project_root)
         return
     state = load_state(project_root)
-    if state is None or state.get("manifest_sha256") != manifest_digest(manifest):
-        raise ReferenceArchiveError(
-            "references are not hydrated from the current manifest; run "
-            "`pixi run download-references` first"
-        )
+    if state is not None and state.get("manifest_sha256") == manifest_digest(manifest):
+        return
+    if _manifest_has_local_changes(project_root):
+        _raise_local_manifest_error(project_root)
+    raise ReferenceArchiveError(
+        "references are not hydrated from the current manifest; run "
+        "`pixi run download-references` first"
+    )
 
 
 def _unexpected_reference_files(
@@ -747,7 +816,12 @@ def update_references(
     repository: str | None = None,
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
-    old_manifest = load_manifest(project_root)
+    try:
+        old_manifest = load_manifest(project_root)
+    except ReferenceArchiveError:
+        if _manifest_has_local_changes(project_root):
+            _raise_local_manifest_error(project_root)
+        raise
     _check_hydration_state(project_root, old_manifest)
     repository = (
         repository

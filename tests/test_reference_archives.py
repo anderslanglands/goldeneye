@@ -404,6 +404,274 @@ def test_update_publishes_only_changed_groups_and_removes_deleted_groups(
     assert not reference.exists()
 
 
+@pytest.mark.parametrize(
+    ("staged", "nested"),
+    [(False, False), (True, False), (False, True)],
+)
+def test_update_rejects_locally_edited_manifest_with_restore_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    staged: bool,
+    nested: bool,
+) -> None:
+    project_root = tmp_path / "project" if nested else tmp_path
+    project_root.mkdir(exist_ok=True)
+    _, _reference = make_suite(project_root)
+    monkeypatch.setattr(
+        archives,
+        "publish_release",
+        lambda _root, _repository, _release, _paths: None,
+    )
+    archives.update_references(
+        project_root, commit=False, repository="owner/repository"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "add", archives.MANIFEST_NAME], cwd=project_root, check=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=project_root,
+        check=True,
+    )
+    manifest = archives.load_manifest(project_root)
+    assert manifest is not None
+    manifest["groups"] = {}
+    archives.write_json_atomic(project_root / archives.MANIFEST_NAME, manifest)
+    if staged:
+        subprocess.run(
+            ["git", "add", archives.MANIFEST_NAME], cwd=project_root, check=True
+        )
+
+    restore_pattern = (
+        r"git restore --source=HEAD --staged --worktree -- reference-releases\.json"
+        if staged
+        else r"git restore --worktree -- reference-releases\.json"
+    )
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match=restore_pattern,
+    ):
+        archives.update_references(project_root, commit=False)
+
+    restore_command = ["git", "restore"]
+    if staged:
+        restore_command.extend(["--source=HEAD", "--staged"])
+    restore_command.extend(["--worktree", "--", archives.MANIFEST_NAME])
+    subprocess.run(restore_command, cwd=project_root, check=True)
+    assert archives.update_references(project_root, commit=False) == {
+        "changed": [],
+        "removed": [],
+        "release": None,
+    }
+
+
+@pytest.mark.parametrize("edit_kind", ["deleted", "malformed", "staged-binary"])
+def test_update_rejects_deleted_or_malformed_local_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    edit_kind: str,
+) -> None:
+    _, _reference = make_suite(tmp_path)
+    monkeypatch.setattr(
+        archives,
+        "publish_release",
+        lambda _root, _repository, _release, _paths: None,
+    )
+    archives.update_references(
+        tmp_path, commit=False, repository="owner/repository"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    manifest_path = tmp_path / archives.MANIFEST_NAME
+    if edit_kind == "deleted":
+        manifest_path.unlink()
+    elif edit_kind == "malformed":
+        manifest_path.write_text("not json\n", encoding="utf-8")
+    else:
+        manifest_path.write_bytes(b"\xff")
+        subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match=(
+            r"cannot be used as the hydration baseline.*"
+            r"pixi run goldeneye update-references"
+        ),
+    ):
+        archives.update_references(tmp_path, commit=False)
+
+
+def test_update_requires_download_when_hydration_state_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _reference = make_suite(tmp_path)
+    monkeypatch.setattr(
+        archives,
+        "publish_release",
+        lambda _root, _repository, _release, _paths: None,
+    )
+    archives.update_references(
+        tmp_path, commit=False, repository="owner/repository"
+    )
+    (tmp_path / archives.STATE_NAME).unlink()
+
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match="run `pixi run download-references` first",
+    ):
+        archives.update_references(tmp_path, commit=False)
+
+
+def test_update_requires_download_for_newly_checked_out_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, reference = make_suite(tmp_path)
+    monkeypatch.setattr(
+        archives,
+        "publish_release",
+        lambda _root, _repository, _release, _paths: None,
+    )
+    archives.update_references(
+        tmp_path, commit=False, repository="owner/repository"
+    )
+    old_state = (tmp_path / archives.STATE_NAME).read_bytes()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    reference.write_bytes(b"updated reference")
+    archives.update_references(tmp_path, commit=False)
+    subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "updated manifest",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    (tmp_path / archives.STATE_NAME).write_bytes(old_state)
+
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match="run `pixi run download-references` first",
+    ):
+        archives.update_references(tmp_path, commit=False)
+
+    manifest = archives.load_manifest(tmp_path)
+    assert manifest is not None
+    manifest["groups"] = {}
+    archives.write_json_atomic(tmp_path / archives.MANIFEST_NAME, manifest)
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match="neither its committed nor staged version matches the hydration state",
+    ):
+        archives.update_references(tmp_path, commit=False)
+
+
+def test_update_preserves_staged_manifest_matching_hydration_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, reference = make_suite(tmp_path)
+    monkeypatch.setattr(
+        archives,
+        "publish_release",
+        lambda _root, _repository, _release, _paths: None,
+    )
+    archives.update_references(
+        tmp_path, commit=False, repository="owner/repository"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    reference.write_bytes(b"updated reference")
+    archives.update_references(tmp_path, commit=False)
+    subprocess.run(["git", "add", archives.MANIFEST_NAME], cwd=tmp_path, check=True)
+    staged_manifest = subprocess.run(
+        ["git", "show", f":{archives.MANIFEST_NAME}"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    ).stdout
+    manifest = archives.load_manifest(tmp_path)
+    assert manifest is not None
+    manifest["groups"] = {}
+    archives.write_json_atomic(tmp_path / archives.MANIFEST_NAME, manifest)
+
+    with pytest.raises(
+        archives.ReferenceArchiveError,
+        match=r"git restore --worktree -- reference-releases\.json",
+    ):
+        archives.update_references(tmp_path, commit=False)
+
+    subprocess.run(
+        ["git", "restore", "--worktree", "--", archives.MANIFEST_NAME],
+        cwd=tmp_path,
+        check=True,
+    )
+    assert (tmp_path / archives.MANIFEST_NAME).read_bytes() == staged_manifest
+    assert archives.update_references(tmp_path, commit=False) == {
+        "changed": [],
+        "removed": [],
+        "release": None,
+    }
+
+
 def test_update_references_skips_missing_reference_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
