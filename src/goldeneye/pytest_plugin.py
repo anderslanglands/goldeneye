@@ -1358,6 +1358,14 @@ def sortable_table_script() -> str:
         const failuresOnlyInput = document.querySelector("[data-failures-only]");
         if (failuresOnlyInput) failuresOnlyInput.checked = restoredState.failuresOnly;
       }
+      if (typeof restoredState?.expectedFailuresOnly === "boolean") {
+        const input = document.querySelector("[data-expected-failures-only]");
+        if (input) input.checked = restoredState.expectedFailuresOnly;
+      }
+      if (typeof restoredState?.suspectsOnly === "boolean") {
+        const input = document.querySelector("[data-suspects-only]");
+        if (input) input.checked = restoredState.suspectsOnly;
+      }
       const topNav = typeof document.querySelector === "function"
         ? document.querySelector(".top-nav")
         : null;
@@ -1891,6 +1899,12 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
         suspect = row.get("suspect") is True
         suspect_label = "Clear suspect" if suspect else "Mark suspect"
         suspect_target = "false" if suspect else "true"
+        expected_failure = bool(
+            row.get("expected_failure") or row.get("expected_failure_reason")
+        )
+        expected_failure_label = (
+            "Clear expected-failure" if expected_failure else "Set expected failure"
+        )
         return (
             '<div class="detail-actions">'
             '<button type="button" class="usdview-button" data-usdview-open '
@@ -1902,7 +1916,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
             '<button type="button" class="report-action-button" '
             'data-row-update-reference>Update reference</button>'
             '<button type="button" class="report-action-button" '
-            'data-row-set-expected-failure>Set expected failure</button>'
+            f'data-row-set-expected-failure>{esc(expected_failure_label)}</button>'
             '<button type="button" class="report-action-button" '
             f'data-row-update-suspect data-suspect-target="{suspect_target}">'
             f'{esc(suspect_label)}</button>'
@@ -1964,6 +1978,7 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
             f'data-reference-path="{esc(row.get("reference") or "")}" '
             f'data-render-path="{esc(row.get("render_image") or row.get("render_output") or "")}" '
             f'data-flip-mean="{esc("" if row.get("flip_mean") is None else row.get("flip_mean"))}" '
+            f'data-expected-failure="{"true" if row.get("expected_failure") or row.get("expected_failure_reason") else "false"}" '
             f'aria-label="Select {esc(row.get("key") or "")}">'
         )
 
@@ -2034,13 +2049,28 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
         render_output = rel_field(row, "render_output") or rel_field(row, "render_image")
         render_filename = Path(render_output).name if render_output else ""
         status_css = " ".join(part for part in ("status-cell", status_class(status)) if part)
-        suspect_marker = '<span class="suspect-badge">suspect</span>' if suspect else ""
-        row_class = "result-row suspect-row" if suspect else "result-row"
+        expected_failure_case = bool(
+            row.get("expected_failure") or row.get("expected_failure_reason")
+        )
+        review_markers = []
+        if suspect:
+            review_markers.append('<span class="suspect-badge">suspect</span>')
+        if expected_failure_case:
+            review_markers.append(
+                '<span class="expected-failure-badge">expected failure</span>'
+            )
+        review_marker = " ".join(review_markers)
+        row_classes = ["result-row"]
+        if suspect:
+            row_classes.append("suspect-row")
+        if expected_failure_case:
+            row_classes.append("expected-failure-case-row")
+        row_class = " ".join(row_classes)
         cells = [
             sortable_cell(esc(status), sort_value=status, css_class=status_css),
             sortable_cell(
-                suspect_marker,
-                sort_value="1" if suspect else "0",
+                review_marker,
+                sort_value=("2" if expected_failure_case else "1" if suspect else "0"),
                 css_class="suspect-cell",
             ),
             sortable_cell(
@@ -2065,6 +2095,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
                 f'data-case-id="{escaped_case_id}" '
                 f'data-test-name="{escaped_key}" '
                 f'data-result-failed="{str(failed).lower()}" '
+                f'data-expected-failure="{str(expected_failure_case).lower()}" '
+                f'data-suspect="{str(suspect).lower()}" '
                 f'aria-expanded="false">'
                 + "".join(cells)
                 + "</tr>"
@@ -2149,6 +2181,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     tr.result-row[aria-expanded="true"] td {{ border-bottom-color: #4a4a4a; }}
     .result-detail-row td {{ padding: 0 10px 18px; background: #101010; border-bottom: 1px solid #3a3a3a; }}
     .suspect-row td:not(.status-cell) {{ background: #1f1d15; }}
+    .expected-failure-case-row td:not(.status-cell) {{ box-shadow: inset 0 1px #665d20; }}
+    .suspect-badge, .expected-failure-badge {{ white-space: nowrap; }}
     .suspect-cell {{ white-space: nowrap; }}
     .suspect-badge {{ display: inline-block; padding: 2px 7px; border: 1px solid var(--ty-yellow-bright); color: var(--ty-yellow-bright); background: rgba(253, 194, 83, 0.12); border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 1.3; }}
     .detail-panel {{ padding-top: 16px; }}
@@ -2231,6 +2265,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
       <label for="report-search-input">Search</label>
       <input id="report-search-input" type="search" data-report-search placeholder="Search tests" autocomplete="off">
       <label class="failures-only-control"><input type="checkbox" data-failures-only>Failures only</label>
+      <label class="failures-only-control"><input type="checkbox" data-expected-failures-only>Expected failures only</label>
+      <label class="failures-only-control"><input type="checkbox" data-suspects-only>Suspects only</label>
       <div class="selection-actions" data-selection-actions hidden>
         <button type="button" class="report-action-button" data-update-threshold>Update threshold</button>
         <button type="button" class="report-action-button" data-update-reference>Update reference</button>

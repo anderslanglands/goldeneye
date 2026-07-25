@@ -714,8 +714,12 @@ export function captureReportUiState() {
   }
   const searchInput = document.querySelector("[data-report-search]");
   const failuresOnlyInput = document.querySelector("[data-failures-only]");
+  const expectedFailuresOnlyInput = document.querySelector("[data-expected-failures-only]");
+  const suspectsOnlyInput = document.querySelector("[data-suspects-only]");
   const search = searchInput?.value || "";
   const failuresOnly = failuresOnlyInput?.checked === true;
+  const expectedFailuresOnly = expectedFailuresOnlyInput?.checked === true;
+  const suspectsOnly = suspectsOnlyInput?.checked === true;
   try {
     const storage = window.sessionStorage;
     storage.setItem(reportUiStateKey(), JSON.stringify({
@@ -725,6 +729,8 @@ export function captureReportUiState() {
       sections,
       search,
       failuresOnly,
+      expectedFailuresOnly,
+      suspectsOnly,
       scrollX: window.scrollX || 0,
       scrollY: window.scrollY || 0,
     }));
@@ -761,7 +767,17 @@ function updateSelectionControls() {
   const referenceButton = document.querySelector("[data-update-reference]");
   if (referenceButton) referenceButton.textContent = `Update reference (${selected.length})`;
   const expectedFailureButton = document.querySelector("[data-set-expected-failure]");
-  if (expectedFailureButton) expectedFailureButton.textContent = `Set expected failure (${selected.length})`;
+  if (expectedFailureButton) {
+    const expectedFailures = selected.filter(
+      (checkbox) => checkbox.dataset?.expectedFailure === "true",
+    ).length;
+    const label = selected.length > 0 && expectedFailures === selected.length
+      ? "Clear expected-failure"
+      : expectedFailures === 0
+        ? "Set expected failure"
+        : "Toggle expected failure";
+    expectedFailureButton.textContent = `${label} (${selected.length})`;
+  }
   for (const selectAll of document.querySelectorAll("[data-select-all]")) {
     updateSelectAllControl(selectAll);
   }
@@ -802,10 +818,19 @@ function syncDetailRowFilterVisibility(row) {
   detail.hidden = row.hidden === true || !expanded;
 }
 
-function rowMatchesReportFilters(row, searchQuery, failuresOnly) {
+function rowMatchesReportFilters(
+  row,
+  searchQuery,
+  failuresOnly,
+  expectedFailuresOnly,
+  suspectsOnly,
+) {
   const testName = row.dataset?.testName || row.dataset?.key || row.textContent || "";
   if (!fuzzyReportMatch(testName, searchQuery)) return false;
-  return !failuresOnly || row.dataset?.resultFailed === "true";
+  if (failuresOnly && row.dataset?.resultFailed !== "true") return false;
+  if (expectedFailuresOnly && row.dataset?.expectedFailure !== "true") return false;
+  if (suspectsOnly && row.dataset?.suspect !== "true") return false;
+  return true;
 }
 
 function updateReportFilterContainers() {
@@ -826,10 +851,20 @@ function updateReportFilterContainers() {
 function applyReportFilters() {
   const searchInput = document.querySelector("[data-report-search]");
   const failuresOnlyInput = document.querySelector("[data-failures-only]");
+  const expectedFailuresOnlyInput = document.querySelector("[data-expected-failures-only]");
+  const suspectsOnlyInput = document.querySelector("[data-suspects-only]");
   const searchQuery = searchInput?.value || "";
   const failuresOnly = failuresOnlyInput?.checked === true;
+  const expectedFailuresOnly = expectedFailuresOnlyInput?.checked === true;
+  const suspectsOnly = suspectsOnlyInput?.checked === true;
   for (const row of document.querySelectorAll("tr.result-row[data-detail-row]")) {
-    row.hidden = !rowMatchesReportFilters(row, searchQuery, failuresOnly);
+    row.hidden = !rowMatchesReportFilters(
+      row,
+      searchQuery,
+      failuresOnly,
+      expectedFailuresOnly,
+      suspectsOnly,
+    );
     if (row.hidden === true) {
       const control = row.querySelector?.("[data-result-select]");
       if (control) control.checked = false;
@@ -843,9 +878,13 @@ function applyReportFilters() {
 function initializeReportFilters() {
   const searchInput = document.querySelector("[data-report-search]");
   const failuresOnlyInput = document.querySelector("[data-failures-only]");
-  if (!searchInput && !failuresOnlyInput) return;
+  const expectedFailuresOnlyInput = document.querySelector("[data-expected-failures-only]");
+  const suspectsOnlyInput = document.querySelector("[data-suspects-only]");
+  if (!searchInput && !failuresOnlyInput && !expectedFailuresOnlyInput && !suspectsOnlyInput) return;
   if (searchInput) searchInput.addEventListener("input", applyReportFilters);
   if (failuresOnlyInput) failuresOnlyInput.addEventListener("change", applyReportFilters);
+  if (expectedFailuresOnlyInput) expectedFailuresOnlyInput.addEventListener("change", applyReportFilters);
+  if (suspectsOnlyInput) suspectsOnlyInput.addEventListener("change", applyReportFilters);
   applyReportFilters();
 }
 
@@ -931,7 +970,7 @@ function initializeSelectionControls() {
       runReportAction(
         "/__goldeneye__/expected-failures",
         expectedFailureButton,
-        "Setting expected failures",
+        "Updating expected failures",
       );
     });
   }
@@ -971,7 +1010,9 @@ function initializeSelectionControls() {
   initializeRowAction(
     "[data-row-set-expected-failure]",
     "/__goldeneye__/expected-failures",
-    "Setting expected failure",
+    (button) => button.textContent?.startsWith("Clear")
+      ? "Clearing expected failure"
+      : "Setting expected failure",
   );
   initializeRowAction(
     "[data-row-update-suspect]",

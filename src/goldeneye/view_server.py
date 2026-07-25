@@ -357,8 +357,13 @@ def update_expected_failures(
         reason = _payload_expected_failure_reason(item)
         row = _find_report_row(results, suite=suite, key=key)
         status = str(row.get("status") or "")
+        configured = bool(row.get("expected_failure") or row.get("expected_failure_reason"))
         if status == "expected-failure":
-            original_status = str(row.get("expected_failure_status") or "failed")
+            original_status = str(row.get("expected_failure_status") or "failed-render")
+            reason = None
+        elif configured:
+            original_status = status
+            reason = None
         elif status.startswith("failed-"):
             original_status = status
         else:
@@ -395,10 +400,16 @@ def update_expected_failures(
         _write_text_atomic(update["config_path"], update["config_text"])
         row = update["row"]
         reason = update["reason"]
-        row["expected_failure"] = reason
-        row["expected_failure_reason"] = reason
-        row["expected_failure_status"] = update["original_status"]
-        row["status"] = "expected-failure"
+        if reason is None:
+            row["expected_failure"] = None
+            row["expected_failure_reason"] = None
+            row["expected_failure_status"] = None
+            row["status"] = update["original_status"]
+        else:
+            row["expected_failure"] = reason
+            row["expected_failure_reason"] = reason
+            row["expected_failure_status"] = update["original_status"]
+            row["status"] = "expected-failure"
         updated_rows.append(
             {
                 "suite": row.get("suite"),
@@ -775,7 +786,9 @@ def build_case_threshold_update(usd_path: Path, threshold: float) -> tuple[Path,
     return config_path, format_toml(data)
 
 
-def build_case_expected_failure_update(usd_path: Path, reason: str) -> tuple[Path, str]:
+def build_case_expected_failure_update(
+    usd_path: Path, reason: str | None
+) -> tuple[Path, str]:
     config_path = _case_config_path(usd_path)
     data: dict[str, Any] = {}
     if config_path.is_file():
@@ -791,9 +804,14 @@ def build_case_expected_failure_update(usd_path: Path, reason: str) -> tuple[Pat
     if not isinstance(test, dict):
         raise ViewServerError(f"[test] must be a table in {config_path}")
     test.pop("expected-failure", None)
-    test["expected_failure"] = reason
+    if reason is None:
+        test.pop("expected_failure", None)
+        if not test:
+            data.pop("test", None)
+    else:
+        test["expected_failure"] = reason
 
-    return config_path, format_toml(data)
+    return config_path, format_toml(data) if data else ""
 
 
 def build_case_suspect_update(usd_path: Path, suspect: bool) -> tuple[Path, str]:

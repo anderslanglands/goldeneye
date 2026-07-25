@@ -2828,10 +2828,20 @@ def test_html_counts_strict_failures(tmp_path: Path) -> None:
 
 
 def test_html_report_includes_filter_controls_and_row_metadata(tmp_path: Path) -> None:
+    usd = tmp_path / "pass.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
     html = plugin.build_html_report(
         [
             {"suite": "sample", "key": "math/add_vector3FA", "status": "failed-threshold"},
-            {"suite": "sample", "key": "surface/pass_case", "status": "passed"},
+            {
+                "suite": "sample",
+                "key": "surface/pass_case",
+                "status": "passed",
+                "expected_failure": "renderer issue",
+                "expected_failure_reason": "renderer issue",
+                "suspect": True,
+                "usd": str(usd),
+            },
         ],
         run_context(tmp_path),
     )
@@ -2839,10 +2849,16 @@ def test_html_report_includes_filter_controls_and_row_metadata(tmp_path: Path) -
     assert '<input id="report-search-input" type="search" data-report-search' in html
     assert 'placeholder="Search tests"' in html
     assert '<input type="checkbox" data-failures-only>Failures only' in html
+    assert '<input type="checkbox" data-expected-failures-only>Expected failures only' in html
+    assert '<input type="checkbox" data-suspects-only>Suspects only' in html
     assert 'data-test-name="math/add_vector3FA"' in html
     assert 'data-result-failed="true"' in html
     assert 'data-test-name="surface/pass_case"' in html
     assert 'data-result-failed="false"' in html
+    assert 'data-expected-failure="true"' in html
+    assert 'data-suspect="true"' in html
+    assert '<span class="expected-failure-badge">expected failure</span>' in html
+    assert 'data-row-set-expected-failure>Clear expected-failure</button>' in html
 
 
 def test_html_report_styles_statuses_and_makes_columns_sortable(tmp_path: Path) -> None:
@@ -3213,6 +3229,8 @@ def test_html_report_rows_expand_with_exr_canvas_viewer(tmp_path: Path) -> None:
         'data-case-id="[&quot;sample&quot;,&quot;case&quot;]" '
         'data-test-name="case" '
         'data-result-failed="false" '
+        'data-expected-failure="false" '
+        'data-suspect="true" '
         'aria-expanded="false">'
     ) in html
     assert '<tr id="result-detail-0" class="result-detail-row" hidden>' in html
@@ -3742,7 +3760,7 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
           return item;
         }
 
-        function resultRow(name, failed, expanded = false) {
+        function resultRow(name, failed, expanded = false, expectedFailure = false, suspect = false) {
           const detailId = `${name}-detail`;
           detail(detailId);
           const attrs = { "aria-expanded": expanded ? "true" : "false" };
@@ -3753,6 +3771,8 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
               detailRow: detailId,
               testName: name,
               resultFailed: failed ? "true" : "false",
+              expectedFailure: expectedFailure ? "true" : "false",
+              suspect: suspect ? "true" : "false",
             },
             textContent: `display text for ${name}`,
             handlers: {},
@@ -3802,8 +3822,8 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
         }
 
         const passRoot = resultRow("passed_surface", false, true);
-        const passChild = resultRow("passed_vector", false, true);
-        const failChild = resultRow("failed_vector3FA", true, true);
+        const passChild = resultRow("passed_vector", false, true, true);
+        const failChild = resultRow("failed_vector3FA", true, true, false, true);
         const passOnly = resultRow("passed_light", false, true);
         const rows = [passRoot, passChild, failChild, passOnly];
         const selectRoot = control();
@@ -3823,6 +3843,8 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
         const search = control();
         search.value = "";
         const failuresOnly = control();
+        const expectedFailuresOnly = control();
+        const suspectsOnly = control();
         const actions = control();
         const thresholdButton = control();
         const referenceButton = control();
@@ -3837,6 +3859,8 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
           querySelector(selector) {
             if (selector === "[data-report-search]") return search;
             if (selector === "[data-failures-only]") return failuresOnly;
+            if (selector === "[data-expected-failures-only]") return expectedFailuresOnly;
+            if (selector === "[data-suspects-only]") return suspectsOnly;
             if (selector === "[data-selection-actions]") return actions;
             if (selector === "[data-update-threshold]") return thresholdButton;
             if (selector === "[data-update-reference]") return referenceButton;
@@ -3920,12 +3944,30 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
           sectionHidden: sections.map((item) => item.hidden),
         };
 
+        expectedFailuresOnly.checked = true;
+        expectedFailuresOnly.handlers.change();
+        const expectedFailuresOnlyState = {
+          rowHidden: rows.map((row) => row.hidden),
+          sectionHidden: sections.map((item) => item.hidden),
+        };
+
+        expectedFailuresOnly.checked = false;
+        expectedFailuresOnly.handlers.change();
+        suspectsOnly.checked = true;
+        suspectsOnly.handlers.change();
+        const suspectsOnlyState = {
+          rowHidden: rows.map((row) => row.hidden),
+          sectionHidden: sections.map((item) => item.hidden),
+        };
+
         console.log(JSON.stringify({
           failuresOnlyState,
           fuzzyState,
           noVisibleFailureState,
           searchOnlyState,
           clearedSearchState,
+          expectedFailuresOnlyState,
+          suspectsOnlyState,
         }));
         """,
         encoding="utf-8",
@@ -3976,6 +4018,14 @@ def test_report_filters_preserve_sections_and_select_only_visible_failures(
         "clearedSearchState": {
             "rowHidden": [False, False, False, False],
             "sectionHidden": [False, False, False],
+        },
+        "expectedFailuresOnlyState": {
+            "rowHidden": [True, False, True, True],
+            "sectionHidden": [False, False, True],
+        },
+        "suspectsOnlyState": {
+            "rowHidden": [True, True, False, True],
+            "sectionHidden": [False, False, True],
         },
     }
 
@@ -4255,6 +4305,8 @@ def test_report_row_action_targets_only_its_row_and_preserves_ui_state(
             "sections": {},
             "search": "mix vdf",
             "failuresOnly": True,
+            "expectedFailuresOnly": False,
+            "suspectsOnly": False,
             "scrollX": 7,
             "scrollY": 413,
         },
@@ -5798,16 +5850,13 @@ def test_view_server_update_expected_failures_updates_case_config_and_report(
     case = plugin.build_case(usd)
     assert case.expected_failure == "Known renderer mismatch"
 
+    html = (run_dir / "index.html").read_text(encoding="utf-8")
+    assert "Clear expected-failure" in html
+
     update_result = view_server.update_expected_failures(
         {
             "run": "/run-0001/",
-            "rows": [
-                {
-                    "suite": "sample",
-                    "key": "case",
-                    "reason": "Updated renderer mismatch",
-                }
-            ],
+            "rows": [{"suite": "sample", "key": "case"}],
         },
         project_root=tmp_path,
         output_root=output_base,
@@ -5819,29 +5868,61 @@ def test_view_server_update_expected_failures_updates_case_config_and_report(
             {
                 "suite": "sample",
                 "key": "case",
-                "reason": "Updated renderer mismatch",
-                "status": "expected-failure",
+                "reason": None,
+                "status": "failed-threshold",
             }
         ],
     }
     assert case_config.read_text(encoding="utf-8") == (
         "[comparison]\nflip_threshold = 0.05\n\n"
-        "[test]\nsuspect = true\nexpected_failure = \"Updated renderer mismatch\"\n"
+        "[test]\nsuspect = true\n"
     )
-    assert plugin.build_case(usd).expected_failure == "Updated renderer mismatch"
+    assert plugin.build_case(usd).expected_failure is None
     updated_report = json.loads((run_dir / "goldeneye-report.json").read_text(encoding="utf-8"))
-    assert updated_report[0]["status"] == "expected-failure"
-    assert updated_report[0]["expected_failure"] == "Updated renderer mismatch"
-    assert updated_report[0]["expected_failure_reason"] == "Updated renderer mismatch"
-    assert updated_report[0]["expected_failure_status"] == "failed-threshold"
+    assert updated_report[0]["status"] == "failed-threshold"
+    assert updated_report[0]["expected_failure"] is None
+    assert updated_report[0]["expected_failure_reason"] is None
+    assert updated_report[0]["expected_failure_status"] is None
     assert updated_report[1]["status"] == "failed-render"
     assert updated_report[2]["status"] == "passed"
     assert updated_report[3]["status"] == "expected-failure"
     assert updated_report[3]["expected_failure_status"] == "failed-launch"
+
+    other_config = suite / "other.goldeneye.toml"
+    other_config.write_text(
+        '[test]\nexpected_failure = "Passing renderer issue"\n', encoding="utf-8"
+    )
+    updated_report[2]["expected_failure"] = "Passing renderer issue"
+    updated_report[2]["expected_failure_reason"] = "Passing renderer issue"
+    (run_dir / "goldeneye-report.json").write_text(
+        json.dumps(updated_report) + "\n", encoding="utf-8"
+    )
+    passing_result = view_server.update_expected_failures(
+        {"run": "/run-0001/", "rows": [{"suite": "sample", "key": "passed"}]},
+        project_root=tmp_path,
+        output_root=output_base,
+    )
+    assert passing_result["rows"] == [
+        {
+            "suite": "sample",
+            "key": "passed",
+            "reason": None,
+            "status": "passed",
+        }
+    ]
+    assert not other_config.exists()
+    passing_report = json.loads(
+        (run_dir / "goldeneye-report.json").read_text(encoding="utf-8")
+    )
+    assert passing_report[2]["status"] == "passed"
+    assert passing_report[2]["expected_failure"] is None
+    assert passing_report[2]["expected_failure_reason"] is None
+    assert plugin.build_case(other_usd).expected_failure is None
+
     html = (run_dir / "index.html").read_text(encoding="utf-8")
     assert "Set expected failure" in html
     assert "expected-failure" in html
-    assert "2 expected failures" in html
+    assert "1 expected failure" in html
 
 
 def test_view_server_update_suspects_updates_case_config_and_report(tmp_path: Path) -> None:
