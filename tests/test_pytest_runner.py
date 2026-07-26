@@ -123,6 +123,84 @@ def run_pytest_with_entrypoint(tmp_path: Path, *args: str) -> subprocess.Complet
     )
 
 
+def write_fake_multiframe_suite(
+    tmp_path: Path,
+    *,
+    frame_template_argument: bool = False,
+    fail: bool = False,
+) -> tuple[Path, Path]:
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    renderer = tmp_path / "usdrender"
+    renderer.write_text(
+        """
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+output_root = Path(arguments[arguments.index("--outputRoot") + 1])
+if "--frames" in arguments:
+    frame_specs = arguments[arguments.index("--frames") + 1].split(",")
+    frames = []
+    for spec in frame_specs:
+        frame_range, _, stride_text = spec.partition("x")
+        if ":" not in frame_range:
+            frames.append(frame_range)
+            continue
+        start_text, end_text = frame_range.split(":")
+        start = float(start_text)
+        end = float(end_text)
+        stride = float(stride_text) if stride_text else (1 if end >= start else -1)
+        frame = start
+        while (stride > 0 and frame <= end) or (stride < 0 and frame >= end):
+            frames.append(str(int(frame)) if frame.is_integer() else f"{frame:g}")
+            frame += stride
+else:
+    frames = [arguments[arguments.index("--single-frame") + 1]]
+
+with Path(__file__).with_name("renderer-calls.txt").open("a", encoding="utf-8") as stream:
+    stream.write(",".join(frames) + "\\n")
+
+if "--fail" in arguments:
+    raise SystemExit(2)
+
+output_root.mkdir(parents=True, exist_ok=True)
+for frame in frames:
+    (output_root / f"case.{frame}.exr").write_bytes(b"not a real exr")
+""",
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable,
+        str(renderer),
+        "{usd_path}",
+        "--outputRoot",
+        "{suite_output_root}",
+    ]
+    if frame_template_argument:
+        command.extend(["--single-frame", "{frame}"])
+    if fail:
+        command.append("--fail")
+    command_toml = ", ".join(json.dumps(argument) for argument in command)
+    (suite / "goldeneye-suite.toml").write_text(
+        f"""
+[suite]
+name = "sample"
+
+[render]
+command = [{command_toml}]
+output_pattern = "{{stem}}.{{frame}}.exr"
+
+[frames]
+case = "1:3"
+""",
+        encoding="utf-8",
+    )
+    usd = suite / "case.usda"
+    usd.write_text("#usda 1.0\n", encoding="utf-8")
+    return usd, renderer.with_name("renderer-calls.txt")
+
+
 class ReportHtmlParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -1339,6 +1417,13 @@ def test_frame_spec_parsing_supports_ranges_lists_strides_and_fractional_frames(
     assert plugin.parse_frame_spec("1:2x0.5") == (1, 1.5, 2)
 
 
+def test_batch_frame_argument_compresses_ranges_and_preserves_lists() -> None:
+    assert plugin.format_frame_spec_argument([1, 2, 3, 5, 7, 9, 10.5]) == (
+        "1:3,5:9x2,10.5"
+    )
+    assert plugin.format_frame_spec_argument([3, 2, 1]) == "3:1"
+
+
 @pytest.mark.parametrize(
     "spec",
     ["", "1x2", "1:3x", "1:3x0", "1:3x-1", "1:x"],
@@ -1465,6 +1550,115 @@ case = "1:2"
     assert "case.usda::case++frame++0001" in completed.stdout
     assert "case.usda::case++frame++0002" in completed.stdout
     assert "2 tests collected" in completed.stdout
+
+
+def test_pytest_renders_selected_fixture_frames_in_one_usdrender_process(
+    tmp_path: Path,
+) -> None:
+    usd, calls_path = write_fake_multiframe_suite(tmp_path)
+
+    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls_path.read_text(encoding="utf-8") == "1,2,3\n"
+    report = json.loads(
+        (
+            tmp_path / "_output" / "run-0001" / "goldeneye-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [row["status"] for row in report] == ["no-ref", "no-ref", "no-ref"]
+    assert all(row["command"][-2:] == ["--frames", "1:3"] for row in report)
+
+
+def test_pytest_batches_only_selected_fixture_frames(tmp_path: Path) -> None:
+    usd, calls_path = write_fake_multiframe_suite(tmp_path)
+
+    completed = run_pytest_with_plugin(
+        tmp_path,
+        str(usd),
+        "-k",
+        "0001 or 0003",
+        "-q",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls_path.read_text(encoding="utf-8") == "1,3\n"
+    report = json.loads(
+        (
+            tmp_path / "_output" / "run-0001" / "goldeneye-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [row["frame"] for row in report] == [1, 3]
+    assert all(row["command"][-2:] == ["--frames", "1,3"] for row in report)
+
+
+def test_pytest_does_not_render_frames_marked_skipped(tmp_path: Path) -> None:
+    usd, calls_path = write_fake_multiframe_suite(tmp_path)
+    (tmp_path / "conftest.py").write_text(
+        """
+import pytest
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if item.name.endswith("0002"):
+            item.add_marker(pytest.mark.skip(reason="skip frame 2"))
+""",
+        encoding="utf-8",
+    )
+
+    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls_path.read_text(encoding="utf-8") == "1\n3\n"
+    report = json.loads(
+        (
+            tmp_path / "_output" / "run-0001" / "goldeneye-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [row["frame"] for row in report] == [1, 3]
+
+
+def test_pytest_does_not_batch_frame_dependent_render_commands(tmp_path: Path) -> None:
+    usd, calls_path = write_fake_multiframe_suite(
+        tmp_path,
+        frame_template_argument=True,
+    )
+
+    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls_path.read_text(encoding="utf-8") == "1\n2\n3\n"
+    report = json.loads(
+        (
+            tmp_path / "_output" / "run-0001" / "goldeneye-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [row["command"][-2:] for row in report] == [
+        ["--single-frame", "1"],
+        ["--single-frame", "2"],
+        ["--single-frame", "3"],
+    ]
+
+
+def test_batched_renderer_failure_is_reported_for_every_frame(tmp_path: Path) -> None:
+    usd, calls_path = write_fake_multiframe_suite(tmp_path, fail=True)
+
+    completed = run_pytest_with_plugin(tmp_path, str(usd), "-q")
+
+    assert completed.returncode == 1
+    assert calls_path.read_text(encoding="utf-8") == "1,2,3\n"
+    report = json.loads(
+        (
+            tmp_path / "_output" / "run-0001" / "goldeneye-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [row["status"] for row in report] == [
+        "failed-render",
+        "failed-render",
+        "failed-render",
+    ]
+    assert all(row["returncode"] == 2 for row in report)
+    assert all(row["command"][-2:] == ["--frames", "1:3"] for row in report)
 
 
 def test_invalid_frame_spec_fails_pytest_collection(tmp_path: Path) -> None:

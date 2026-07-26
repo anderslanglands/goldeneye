@@ -188,6 +188,23 @@ Useful command template fields:
 | `{name}`               | Goldeneye case name, currently the fixture file stem. |
 | `{frame}`              | Frame value for frame-expanded cases. Using this field on a case without configured frames is an error. |
 
+Configure frame-expanded fixtures by path in `goldeneye-suite.toml`:
+
+```toml
+[render]
+output_pattern = "{path}.{frame:04d}.exr"
+
+[frames]
+"animated/case" = "1:10"
+```
+
+When the selected command invokes `usdrender`, Goldeneye renders the selected frames
+for one fixture in a single process. The USD `RenderProduct` path must also contain a
+`{frame}` placeholder so each frame writes a distinct image. Commands that use the
+`{frame}` template field, resolve to different arguments per frame, or run under
+pytest-xdist or pytest-rerunfailures fall back to one process per frame. A fixture
+with any pytest-skipped frame also falls back so skipped frames are never rendered.
+
 For a one-off run, override the command without editing config:
 
 ```bash

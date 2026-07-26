@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import html
 import json
+import math
 import os
 import re
 import shlex
@@ -194,6 +195,14 @@ class RenderCommandContext:
     frame: FrameValue | None
 
 
+@dataclass(frozen=True)
+class RenderExecution:
+    command: tuple[str, ...]
+    returncode: int | None = None
+    renderer_output: str = ""
+    launch_error: str | None = None
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("goldeneye")
     group.addoption(
@@ -261,6 +270,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config._goldeneye_results = []  # type: ignore[attr-defined]
     config._goldeneye_run_context = None  # type: ignore[attr-defined]
+    config._goldeneye_render_batches = {}  # type: ignore[attr-defined]
 
 
 def pytest_ignore_collect(collection_path: Any, config: pytest.Config) -> bool:
@@ -331,8 +341,14 @@ class GoldeneyeUsdItem(pytest.Item):
     def runtest(self) -> None:
         if self.case.skip:
             pytest.skip(self.case.skip)
+        options = options_from_config(self.config)
+        render_execution = batched_render_execution(self, options)
         try:
-            result = run_goldeneye_case(self.case, options_from_config(self.config))
+            result = run_goldeneye_case(
+                self.case,
+                options,
+                render_execution=render_execution,
+            )
         except GoldeneyeRenderError as exc:
             if exc.result is not None:
                 self.config._goldeneye_results.append(exc.result)  # type: ignore[attr-defined]
@@ -571,10 +587,20 @@ def next_run_number(output_base: Path) -> int:
     return max(numbers, default=0) + 1
 
 
-def run_goldeneye_case(case: GoldeneyeCase, options: GoldeneyeOptions) -> dict[str, Any]:
+def run_goldeneye_case(
+    case: GoldeneyeCase,
+    options: GoldeneyeOptions,
+    *,
+    render_execution: RenderExecution | None = None,
+) -> dict[str, Any]:
     expected_failure = case_expected_failure_reason(case, options)
     try:
-        return _run_goldeneye_case_impl(case, options, expected_failure=expected_failure)
+        return _run_goldeneye_case_impl(
+            case,
+            options,
+            expected_failure=expected_failure,
+            render_execution=render_execution,
+        )
     except GoldeneyeRenderError as exc:
         if expected_failure is not None and exc.result is not None:
             return mark_expected_failure(exc.result, expected_failure)
@@ -616,6 +642,7 @@ def _run_goldeneye_case_impl(
     options: GoldeneyeOptions,
     *,
     expected_failure: str | None = None,
+    render_execution: RenderExecution | None = None,
 ) -> dict[str, Any]:
     output_root = resolve_output_root(case, options)
     artifact_root = resolve_artifact_root(case, options)
@@ -669,38 +696,37 @@ def _run_goldeneye_case_impl(
     except GoldeneyeRenderError as exc:
         result["status"] = "failed-command"
         raise GoldeneyeRenderError(str(exc), result) from exc
+    if render_execution is not None:
+        cmd = list(render_execution.command)
     result["command"] = cmd
 
     if options.dry_run:
-        print(format_command(cmd))
+        if render_execution is None:
+            print(format_command(cmd))
         result["status"] = "dry-run"
         return result
 
-    output_root.mkdir(parents=True, exist_ok=True)
-    try:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except FileNotFoundError as exc:
+    if render_execution is None:
+        output_root.mkdir(parents=True, exist_ok=True)
+        render_execution = execute_render_command(cmd)
+
+    if render_execution.launch_error is not None:
         result["status"] = "failed-launch"
         raise GoldeneyeRenderError(
-            f"failed to launch renderer: {exc}\ncommand: {format_command(cmd)}",
+            "failed to launch renderer: "
+            f"{render_execution.launch_error}\ncommand: {format_command(cmd)}",
             result,
-        ) from exc
+        )
 
-    renderer_output = combined_process_output(completed)
-    result["returncode"] = completed.returncode
+    renderer_output = render_execution.renderer_output
+    result["returncode"] = render_execution.returncode
     result["renderer_output"] = renderer_output
-    if completed.returncode != 0:
+    if render_execution.returncode != 0:
         result["status"] = "failed-render"
         raise GoldeneyeRenderError(
             "renderer failed\n"
             f"command: {format_command(cmd)}\n"
-            f"exit code: {completed.returncode}\n"
+            f"exit code: {render_execution.returncode}\n"
             f"output:\n{tail(renderer_output)}",
             result,
         )
@@ -776,6 +802,166 @@ def _run_goldeneye_case_impl(
         )
 
     return result
+
+
+def batched_render_execution(
+    item: GoldeneyeUsdItem,
+    options: GoldeneyeOptions,
+) -> RenderExecution | None:
+    if (
+        item.case.frame is None
+        or hasattr(item.config, "workerinput")
+        or item.config.pluginmanager.hasplugin("rerunfailures")
+    ):
+        return None
+
+    batch_items = [
+        candidate
+        for candidate in item.session.items
+        if isinstance(candidate, GoldeneyeUsdItem)
+        and candidate.case.path == item.case.path
+        and candidate.case.frame is not None
+    ]
+    if len(batch_items) < 2:
+        return None
+    if any(
+        candidate.get_closest_marker(name) is not None
+        for candidate in batch_items
+        for name in ("skip", "skipif")
+    ):
+        return None
+
+    cache_key = (
+        str(item.case.path.resolve()),
+        tuple(candidate.case.key for candidate in batch_items),
+    )
+    cache: dict[object, RenderExecution | None] = (
+        item.config._goldeneye_render_batches  # type: ignore[attr-defined]
+    )
+    if cache_key in cache:
+        return cache[cache_key]
+
+    cases = [candidate.case for candidate in batch_items]
+    command = build_batched_render_command(cases, options)
+    if command is None:
+        cache[cache_key] = None
+        return None
+
+    if options.dry_run:
+        print(format_command(command))
+        execution = RenderExecution(command=tuple(command))
+    else:
+        output_root = resolve_output_root(item.case, options)
+        output_root.mkdir(parents=True, exist_ok=True)
+        execution = execute_render_command(command)
+    cache[cache_key] = execution
+    return execution
+
+
+def build_batched_render_command(
+    cases: list[GoldeneyeCase],
+    options: GoldeneyeOptions,
+) -> list[str] | None:
+    if len(cases) < 2 or any(case.frame is None for case in cases):
+        return None
+
+    try:
+        _renderer, template = resolve_render_command(cases[0], options)
+        if "frame" in template_field_names(template):
+            return None
+
+        output_roots = [resolve_output_root(case, options) for case in cases]
+        render_outputs = [
+            resolve_render_output(case, output_root)
+            for case, output_root in zip(cases, output_roots)
+        ]
+        if len(set(output_roots)) != 1 or len(set(render_outputs)) != len(cases):
+            return None
+
+        commands = [
+            build_render_command(case, options, output_root, render_output)
+            for case, output_root, render_output in zip(
+                cases, output_roots, render_outputs
+            )
+        ]
+    except (GoldeneyeRenderError, ValueError):
+        return None
+
+    if not command_invokes_usdrender(commands[0]):
+        return None
+
+    base_command = commands[0][:-2]
+    for case, command in zip(cases, commands):
+        frame_argument = format_frame_argument(case.frame)  # type: ignore[arg-type]
+        if command[-2:] != ["--frames", frame_argument]:
+            return None
+        if command[:-2] != base_command:
+            return None
+
+    frames = format_frame_spec_argument(
+        [case.frame for case in cases]  # type: ignore[list-item]
+    )
+    return [*base_command, "--frames", frames]
+
+
+def command_invokes_usdrender(command: list[str]) -> bool:
+    return any(Path(argument).name == "usdrender" for argument in command)
+
+
+def format_frame_spec_argument(frames: list[FrameValue]) -> str:
+    parts: list[str] = []
+    index = 0
+    while index < len(frames):
+        end = index + 1
+        if end < len(frames):
+            stride = float(frames[end]) - float(frames[index])
+            while end + 1 < len(frames) and math.isclose(
+                float(frames[end + 1]) - float(frames[end]),
+                stride,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                end += 1
+            if end - index >= 2:
+                start_text = format_frame_argument(frames[index])
+                end_text = format_frame_argument(frames[end])
+                if math.isclose(abs(stride), 1.0):
+                    parts.append(f"{start_text}:{end_text}")
+                else:
+                    parts.append(
+                        f"{start_text}:{end_text}x"
+                        f"{format_frame_argument(_normalized_frame_argument(stride))}"
+                    )
+                index = end + 1
+                continue
+        parts.append(format_frame_argument(frames[index]))
+        index += 1
+    return ",".join(parts)
+
+
+def _normalized_frame_argument(frame: float) -> FrameValue:
+    return int(frame) if frame.is_integer() else frame
+
+
+def execute_render_command(command: list[str]) -> RenderExecution:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError as exc:
+        return RenderExecution(
+            command=tuple(command),
+            launch_error=str(exc),
+        )
+    return RenderExecution(
+        command=tuple(command),
+        returncode=completed.returncode,
+        renderer_output=combined_process_output(completed),
+    )
 
 
 def build_render_command(
