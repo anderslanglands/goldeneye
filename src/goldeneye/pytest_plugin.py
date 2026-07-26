@@ -2031,6 +2031,8 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     summary = summarize_results(context, results)
     rows = sorted(results, key=html_report_sort_key)
     comparison_manifest = build_run_comparison_manifest(results, context)
+    renderer_output_owners: dict[tuple[str, str], str] = {}
+    usd_source_owners: dict[tuple[str, str, str], str] = {}
 
     def esc(value: object) -> str:
         return html.escape(str(value), quote=True)
@@ -2129,6 +2131,13 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
     def renderer_output_markup(row: dict[str, Any]) -> str:
         output = row.get("renderer_output")
         if isinstance(output, str) and output:
+            content_key = (str(row.get("usd") or ""), output)
+            owner = renderer_output_owners.get(content_key)
+            if owner is not None:
+                return shared_renderer_output_markup(owner)
+            row_key = str(row.get("key") or "")
+            if row_key:
+                renderer_output_owners[content_key] = row_key
             return (
                 '<details class="renderer-output">'
                 '<summary>Renderer output</summary>'
@@ -2138,6 +2147,9 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
         owner = row.get("renderer_output_owner")
         if not isinstance(owner, str) or not owner:
             return ""
+        return shared_renderer_output_markup(owner)
+
+    def shared_renderer_output_markup(owner: str) -> str:
         return (
             '<details class="renderer-output">'
             '<summary>Renderer output</summary>'
@@ -2153,6 +2165,19 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
         source_name = row.get("usd_source_name")
         if not source_name:
             return ""
+        content_key = (str(row.get("usd") or ""), str(source_name), source)
+        owner = usd_source_owners.get(content_key)
+        if owner is not None:
+            return (
+                '<details class="usda-source">'
+                f"<summary>{esc(source_name)}</summary>"
+                "<p>Shared fixture source is attached to "
+                f"<code>{esc(owner)}</code>.</p>"
+                "</details>"
+            )
+        row_key = str(row.get("key") or "")
+        if row_key:
+            usd_source_owners[content_key] = row_key
         return (
             '<details class="usda-source">'
             f"<summary>{esc(source_name)}</summary>"

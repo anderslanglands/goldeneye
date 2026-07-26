@@ -3553,6 +3553,73 @@ def test_html_report_rows_expand_with_exr_canvas_viewer(tmp_path: Path) -> None:
     assert '"/__goldeneye__/suspects"' in viewer_js
 
 
+def test_html_report_deduplicates_legacy_frame_payloads_by_fixture(
+    tmp_path: Path,
+) -> None:
+    context = run_context(tmp_path)
+    usd = tmp_path / "suite" / "animated.usda"
+    other_usd = tmp_path / "suite" / "other.usda"
+    source = '#usda 1.0\ndef Scope "SharedSource"\n'
+    renderer_output = "shared renderer line\n"
+
+    html = plugin.build_html_report(
+        [
+            {
+                "suite": "sample",
+                "key": "animated++frame++0001",
+                "status": "passed",
+                "usd": str(usd),
+                "usd_source_name": usd.name,
+                "usd_source": source,
+                "renderer_output": renderer_output,
+            },
+            {
+                "suite": "sample",
+                "key": "animated++frame++0002",
+                "status": "passed",
+                "usd": str(usd),
+                "usd_source_name": usd.name,
+                "usd_source": source,
+                "renderer_output": renderer_output,
+            },
+            {
+                "suite": "sample",
+                "key": "animated++frame++0003",
+                "status": "passed",
+                "usd": str(usd),
+                "usd_source_name": usd.name,
+                "usd_source": '#usda 1.0\ndef Scope "ChangedSource"\n',
+                "renderer_output": "changed renderer line\n",
+            },
+            {
+                "suite": "sample",
+                "key": "other",
+                "status": "passed",
+                "usd": str(other_usd),
+                "usd_source_name": other_usd.name,
+                "usd_source": source,
+                "renderer_output": renderer_output,
+            },
+        ],
+        context,
+    )
+
+    assert html.count("shared renderer line") == 2
+    assert html.count("changed renderer line") == 1
+    assert html.count("Shared batch output is attached to") == 1
+    assert (
+        "Shared batch output is attached to "
+        "<code>animated++frame++0001</code>"
+    ) in html
+    assert html.count("SharedSource") == 2
+    assert html.count("ChangedSource") == 1
+    assert html.count("Shared fixture source is attached to") == 1
+    assert (
+        "Shared fixture source is attached to "
+        "<code>animated++frame++0001</code>"
+    ) in html
+
+
 def test_html_report_derives_fixture_doc_from_saved_usda_source(tmp_path: Path) -> None:
     context = run_context(tmp_path)
     saved_usda_source = (
