@@ -63,7 +63,10 @@ def extract_failures(
         raise ExtractFailuresError(f"missing {REPORT_NAME}: {report_path}")
 
     source_results = read_json_list(report_path)
-    failures = [row for row in source_results if is_failure_result(row)]
+    failures = normalize_shared_renderer_outputs(
+        [row for row in source_results if is_failure_result(row)],
+        source_results,
+    )
     if not failures:
         raise ExtractFailuresError(f"no failed cases found in {source_run}")
 
@@ -83,6 +86,45 @@ def extract_failures(
         run_dir=target_context.run_dir,
         count=len(target_results),
     )
+
+
+def normalize_shared_renderer_outputs(
+    rows: list[dict[str, Any]],
+    source_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = [dict(row) for row in rows]
+    selected_keys = {
+        (str(row.get("suite") or ""), str(row.get("key") or ""))
+        for row in normalized
+    }
+    output_by_key = {
+        (str(row.get("suite") or ""), str(row.get("key") or "")): output
+        for row in source_results
+        if isinstance((output := row.get("renderer_output")), str) and output
+    }
+    owner_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in normalized:
+        owner = row.get("renderer_output_owner")
+        if not isinstance(owner, str) or not owner:
+            continue
+        owner_key = (str(row.get("suite") or ""), owner)
+        owner_groups.setdefault(owner_key, []).append(row)
+
+    for owner_key, group in owner_groups.items():
+        if owner_key in selected_keys:
+            continue
+        output = output_by_key.get(owner_key)
+        new_owner = str(group[0].get("key") or "")
+        if not output or not new_owner:
+            for row in group:
+                row.pop("renderer_output_owner", None)
+            continue
+        group[0].pop("renderer_output_owner", None)
+        group[0]["renderer_output"] = output
+        for row in group[1:]:
+            row["renderer_output_owner"] = new_owner
+
+    return normalized
 
 
 def extract_failure_row(

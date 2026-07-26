@@ -161,6 +161,8 @@ else:
 with Path(__file__).with_name("renderer-calls.txt").open("a", encoding="utf-8") as stream:
     stream.write(",".join(frames) + "\\n")
 
+print(f"Rendered frames {','.join(frames)}")
+
 if "--fail" in arguments:
     raise SystemExit(2)
 
@@ -1568,6 +1570,20 @@ def test_pytest_renders_selected_fixture_frames_in_one_usdrender_process(
     )
     assert [row["status"] for row in report] == ["no-ref", "no-ref", "no-ref"]
     assert all(row["command"][-2:] == ["--frames", "1:3"] for row in report)
+    assert report[0]["renderer_output"] == "Rendered frames 1,2,3\n"
+    assert "renderer_output_owner" not in report[0]
+    assert [
+        (row.get("renderer_output"), row.get("renderer_output_owner"))
+        for row in report[1:]
+    ] == [
+        (None, "case++frame++0001"),
+        (None, "case++frame++0001"),
+    ]
+    html = (
+        tmp_path / "_output" / "run-0001" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert html.count("Rendered frames 1,2,3") == 1
+    assert html.count("Shared batch output is attached to") == 2
 
 
 def test_pytest_batches_only_selected_fixture_frames(tmp_path: Path) -> None:
@@ -1659,6 +1675,12 @@ def test_batched_renderer_failure_is_reported_for_every_frame(tmp_path: Path) ->
     ]
     assert all(row["returncode"] == 2 for row in report)
     assert all(row["command"][-2:] == ["--frames", "1:3"] for row in report)
+    assert report[0]["renderer_output"] == "Rendered frames 1,2,3\n"
+    assert [row.get("renderer_output_owner") for row in report[1:]] == [
+        "case++frame++0001",
+        "case++frame++0001",
+    ]
+    assert all("renderer_output" not in row for row in report[1:])
 
 
 def test_invalid_frame_spec_fails_pytest_collection(tmp_path: Path) -> None:

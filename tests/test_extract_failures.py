@@ -201,6 +201,56 @@ def test_extract_failures_copies_only_failed_rows_and_run_local_artifacts(
     } == source_artifacts_before
 
 
+def test_extract_failures_rehomes_shared_renderer_output_when_owner_passed(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "_output"
+    source_run = write_run(
+        output_root,
+        1,
+        [
+            {
+                "key": "case++frame++0001",
+                "status": "passed",
+                "renderer_output": "shared batch output\n",
+            },
+            {
+                "key": "case++frame++0002",
+                "status": "failed-threshold",
+                "renderer_output_owner": "case++frame++0001",
+            },
+            {
+                "key": "case++frame++0003",
+                "status": "failed-threshold",
+                "renderer_output_owner": "case++frame++0001",
+            },
+        ],
+    )
+
+    extract.extract_failures(
+        output_root=output_root,
+        run="1",
+        started_at="2026-07-01T00:00:00+00:00",
+    )
+
+    new_run = output_root / "run-0002"
+    report = json.loads(
+        (new_run / "goldeneye-report.json").read_text(encoding="utf-8")
+    )
+    assert [row["key"] for row in report] == [
+        "case++frame++0002",
+        "case++frame++0003",
+    ]
+    assert report[0]["renderer_output"] == "shared batch output\n"
+    assert "renderer_output_owner" not in report[0]
+    assert "renderer_output" not in report[1]
+    assert report[1]["renderer_output_owner"] == "case++frame++0002"
+    html = (new_run / "index.html").read_text(encoding="utf-8")
+    assert html.count("shared batch output") == 1
+    assert html.count("Shared batch output is attached to") == 1
+    assert (source_run / "goldeneye-report.json").is_file()
+
+
 def test_extract_failures_preserves_partial_sparse_and_legacy_artifact_rows(
     tmp_path: Path,
 ) -> None:

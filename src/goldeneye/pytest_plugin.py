@@ -200,6 +200,7 @@ class RenderExecution:
     command: tuple[str, ...]
     returncode: int | None = None
     renderer_output: str = ""
+    renderer_output_owner: str | None = None
     launch_error: str | None = None
 
 
@@ -720,7 +721,13 @@ def _run_goldeneye_case_impl(
 
     renderer_output = render_execution.renderer_output
     result["returncode"] = render_execution.returncode
-    result["renderer_output"] = renderer_output
+    if (
+        render_execution.renderer_output_owner is None
+        or render_execution.renderer_output_owner == case.key
+    ):
+        result["renderer_output"] = renderer_output
+    elif renderer_output:
+        result["renderer_output_owner"] = render_execution.renderer_output_owner
     if render_execution.returncode != 0:
         result["status"] = "failed-render"
         raise GoldeneyeRenderError(
@@ -853,7 +860,10 @@ def batched_render_execution(
     else:
         output_root = resolve_output_root(item.case, options)
         output_root.mkdir(parents=True, exist_ok=True)
-        execution = execute_render_command(command)
+        execution = execute_render_command(
+            command,
+            renderer_output_owner=item.case.key,
+        )
     cache[cache_key] = execution
     return execution
 
@@ -943,7 +953,11 @@ def _normalized_frame_argument(frame: float) -> FrameValue:
     return int(frame) if frame.is_integer() else frame
 
 
-def execute_render_command(command: list[str]) -> RenderExecution:
+def execute_render_command(
+    command: list[str],
+    *,
+    renderer_output_owner: str | None = None,
+) -> RenderExecution:
     try:
         completed = subprocess.run(
             command,
@@ -955,12 +969,14 @@ def execute_render_command(command: list[str]) -> RenderExecution:
     except OSError as exc:
         return RenderExecution(
             command=tuple(command),
+            renderer_output_owner=renderer_output_owner,
             launch_error=str(exc),
         )
     return RenderExecution(
         command=tuple(command),
         returncode=completed.returncode,
         renderer_output=combined_process_output(completed),
+        renderer_output_owner=renderer_output_owner,
     )
 
 
@@ -2112,12 +2128,21 @@ def build_html_report(results: list[dict[str, Any]], context: RunContext) -> str
 
     def renderer_output_markup(row: dict[str, Any]) -> str:
         output = row.get("renderer_output")
-        if not isinstance(output, str) or not output:
+        if isinstance(output, str) and output:
+            return (
+                '<details class="renderer-output">'
+                '<summary>Renderer output</summary>'
+                f"<pre><code>{esc(output)}</code></pre>"
+                "</details>"
+            )
+        owner = row.get("renderer_output_owner")
+        if not isinstance(owner, str) or not owner:
             return ""
         return (
             '<details class="renderer-output">'
             '<summary>Renderer output</summary>'
-            f"<pre><code>{esc(output)}</code></pre>"
+            "<p>Shared batch output is attached to "
+            f"<code>{esc(owner)}</code>.</p>"
             "</details>"
         )
 
